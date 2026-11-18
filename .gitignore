@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+# donnees et sorties volumineuses : a ne pas versionner
+dataset/
+sortie/*.csv
+log_segments/
+log_estimation_H/
+resultats_H/*.csv
+teste_pret/
+experiences/visuel/
+
+resultats_*
+
+sortie*/
