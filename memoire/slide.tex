@@ -1,0 +1,745 @@
+% =====================================================================
+%  Soutenance : Analyse de la dynamique fractionnaire de la mobilité urbaine
+%  Compilation : latexmk -pdf -xelatex slide.tex      (figures dans ./figures/)
+% =====================================================================
+\documentclass[aspectratio=169,11pt]{beamer}
+
+\usepackage{fontspec}
+\usepackage[french]{babel}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs,array}
+\usepackage{graphicx}
+\graphicspath{{figures/}}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}   % <-- AJOUT : positioning (corrige l'erreur PGF)
+
+\usetheme{Madrid}
+\definecolor{accent}{HTML}{1F4E79}
+\setbeamercolor{structure}{fg=accent}
+\setbeamercolor{alerted text}{fg=red!70!black}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}{\hfill\small\insertframenumber\hspace{4mm}\vspace{2mm}}
+\setbeamertemplate{itemize items}[circle]
+
+\newcommand{\code}[1]{\texttt{#1}}
+% \fig[hauteur max en fraction de \textheight]{fichier}
+\newcommand{\fig}[2][0.72]{\includegraphics[width=\linewidth,height=#1\textheight,keepaspectratio]{#2}}
+
+\title[Dynamique fractionnaire de la mobilité]{Analyse de la dynamique fractionnaire\\de la mobilité urbaine}
+\subtitle{Exposant de Hurst, temps de séjour et lois de puissance\\sur des trajectoires GPS (GeoLife)}
+\author{Votre nom}            % <- à compléter
+\institute{Master 2 \,---\, 2025--2026}
+\date{Soutenance}
+
+\begin{document}
+
+% ---------------------------------------------------------------------
+\begin{frame}[plain]
+\titlepage
+\end{frame}
+
+\begin{frame}{Plan}
+\tableofcontents
+\end{frame}
+
+% =====================================================================
+\section{Contexte et problématique}
+% =====================================================================
+
+\begin{frame}{Contexte : la mobilité humaine vue par GPS}
+\begin{itemize}
+  \item Récepteurs GPS embarqués : suivi de la mobilité à l'échelle de quelques secondes
+  \item Résultats classiques : \alert{lois d'échelle} des longueurs de déplacement, forte régularité des trajectoires individuelles\\
+        {\footnotesize (Brockmann 2006 ; González 2008 ; Rhee 2011)}
+  \item Notre angle : la \alert{mémoire}
+\end{itemize}
+\begin{block}{Question}
+L'amplitude d'un déplacement influence-t-elle les suivants, au-delà des corrélations de court terme ?
+\end{block}
+\medskip
+Deux axes dans ce travail :\ \textbf{(1)} l'exposant de Hurst $H$ ;\ \textbf{(2)} les lois de puissance des temps de séjour et des distances entre arrêts.
+\end{frame}
+
+\begin{frame}{L'exposant de Hurst $H$}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\begin{tabular}{@{}lp{5.4cm}@{}}
+\toprule
+$H$ & Lecture \\
+\midrule
+$H<\tfrac12$ & antipersistant \\
+$H=\tfrac12$ & sans mémoire (bruit blanc) \\
+$H>\tfrac12$ & persistant : un grand déplacement tend à être suivi d'un grand \\
+\bottomrule
+\end{tabular}
+\column{0.47\textwidth}
+\begin{block}{Dépendance à longue portée (DLP)}
+\[
+\gamma(k)\sim C\,k^{2H-2},\qquad \tfrac12<H<1
+\]
+$\sum_k|\gamma(k)|=+\infty$ : les corrélations décroissent si lentement que leur somme diverge.\\[1mm]
+Spectre : $f(\lambda)\sim|\lambda|^{1-2H}$ quand $\lambda\to0$.
+\end{block}
+\end{columns}
+\medskip
+Modèle de référence : le \alert{bruit gaussien fractionnaire} (fGn), qui sert à fabriquer des séries dont $H$ est connu.
+\end{frame}
+
+\begin{frame}{Positionnement}
+\begin{itemize}
+  \item Travail le plus proche : Wang, Han \& Wang (2014) estiment $H$ sur des séries de déplacements issues de GeoLife, construites à partir des \alert{déplacements entre points d'arrêt successifs}
+  \item Notre série : les \alert{distances entre points GPS successifs}, $d_i$
+  \item Cette différence soulève des difficultés méthodologiques qui forment le fil conducteur du mémoire :
+  \begin{itemize}
+    \item non-stationnarité
+    \item changements de régime
+    \item rythme d'enregistrement
+  \end{itemize}
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Du cahier des charges à une hypothèse à tester}
+\textbf{Demandé :} \og démontrer empiriquement \fg{} la DLP, et mettre en évidence des lois de puissance.
+
+\medskip
+\textbf{Trois obstacles à une démonstration directe :}
+\begin{enumerate}
+  \item \alert{La série} : $d_i=v_i\,\delta_i$ mélange vitesse et intervalle de temps ; elle n'est pas stationnaire
+  \item \alert{Les estimateurs} : sensibles à la non-stationnarité et aux changements de régime, faciles à confondre avec de la mémoire longue (Diebold \& Inoue 2001)
+  \item \alert{La circularité} : le filtre de fiabilité retient les segments où les méthodes s'accordent, donc conditionne sur $H$ lui-même
+\end{enumerate}
+\begin{block}{Reformulation}
+$H_0$ : mémoire courte avec changements de régime \quad contre \quad $H_1$ : mémoire longue
+\end{block}
+\end{frame}
+
+\begin{frame}{Question de recherche et périmètre}
+\begin{block}{Question}
+Dans quelle mesure peut-on, après prétraitement, attribuer à la mobilité la valeur de $H$ estimée, et que permet de conclure un test à mémoire courte ?
+\end{block}
+\footnotesize
+\begin{tabular}{@{}p{8.2cm}l@{}}
+\toprule
+Composant & État \\
+\midrule
+Prétraitement, marquage, indicateurs de qualité & implémenté \\
+Détection d'arrêts et temps de séjour & implémenté, limites connues \\
+Estimation de $H$ (DFA, R/S, Whittle local) et filtre de fiabilité & implémenté \\
+Validation synthétique, test de dépassement & implémenté \\
+Lois de puissance (Clauset, alternatives) & méthode et résultats \\
+Test du mécanisme ON/OFF & script écrit, à corriger \\
+Segmentation par labels, séries à pas régulier, tests de Berkes et de Qu & proposé \\
+Typologie des utilisateurs, cartographie des zones de mémoire & non commencé \\
+\bottomrule
+\end{tabular}
+\end{frame}
+
+% =====================================================================
+\section{Données}
+% =====================================================================
+
+\begin{frame}{GeoLife en chiffres}
+Microsoft Research Asia. Guide v1.2 : 178 utilisateurs, 17\,621 trajectoires, 23\,667\,828 points, 1\,251\,654~km, 48\,203~heures.
+\bigskip
+\begin{columns}[c]
+\column{0.3\textwidth}\centering {\Huge\textbf{145}}\\[1mm] utilisateurs avec au moins\\ un segment retenu
+\column{0.3\textwidth}\centering {\Huge\textbf{19\,150}}\\[1mm] segments retenus
+\column{0.3\textwidth}\centering {\Huge\textbf{7\,853}}\\[1mm] segments \og gardés \fg{}\\ (41,0~\%)
+\end{columns}
+\bigskip
+\begin{itemize}
+  \item Aucun protocole de collecte : chacun enregistrait quand et comme il le voulait
+  \item Dossier 182 : données personnelles de l'auteur (Sénégal, période récente) \(\Rightarrow\) \alert{exclu} de toute analyse agrégée
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Format des fichiers et mode d'enregistrement}
+\begin{itemize}
+  \item Un fichier \code{.plt} par trajectoire : 6 lignes d'en-tête, puis latitude, longitude, altitude (pieds, $-777$ si invalide), jour julien, date et heure (GMT)
+  \item 91~\% des trajectoires sont denses : un point toutes les \alert{1 à 5~s}, ou tous les \alert{5 à 10~m}
+  \item Ces deux modes ne mesurent pas la même chose : en mode \og distance \fg{}, $d_i$ est presque constant quelle que soit la vitesse \(\Rightarrow\) la série décrit l'appareil, pas le déplacement
+  \item Heuristique de classement : mode \emph{temps}, \emph{distance} ou \emph{mixte}
+  \item Labels de transport : 69 utilisateurs (saisis à la main), \alert{non utilisés} dans le pipeline actuel
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Audit de T-Drive : un second jeu de données écarté}
+\begin{columns}[T]
+\column{0.58\textwidth}
+\fig[0.65]{graphe_6_tdrive.pdf}        % <-- MODIFIÉ : 0.70 -> 0.65
+\column{0.40\textwidth}
+\begin{itemize}
+  \item $65{,}3$~\% des taxis dépassent 200~km/h, $48{,}6$~\% dépassent 1\,000~km/h
+  \item Sauts de 1\,495~km sans déplacement physique (taxi 6275)
+  \item Taille médiane des segments à $T_{\mathrm{gap}}=900$~s : \alert{10 points}
+  \item Lois de puissance : $x_{\min}=12{,}7$~h, queue de $1{,}8$~\% des séjours (stationnements nocturnes)
+\end{itemize}
+\medskip
+\alert{T-Drive mesure l'exploitation d'une flotte, pas la mobilité.}
+\end{columns}
+\end{frame}
+
+% =====================================================================
+\section{Méthodes}
+% =====================================================================
+
+\begin{frame}{Vue d'ensemble de la chaîne}
+\centering
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  box/.style={draw=accent, rounded corners=2pt, fill=accent!8, align=center, font=\scriptsize, minimum height=9mm, inner sep=2pt},
+  b1/.style={box, text width=2.05cm},
+  b2/.style={box, text width=1.85cm},
+  arr/.style={-{Stealth[length=1.6mm]}, thick, accent}]
+\node[b1] (a) at (1.05,0)  {Fichiers \code{.plt}\\GeoLife};
+\node[b1] (b) at (3.55,0)  {Nettoyage,\\tri, doublons};
+\node[b1] (c) at (6.05,0)  {Segmentation\\(trou $>900$~s)};
+\node[b1] (d) at (8.55,0)  {Marquage des\\points suspects};
+\node[b1] (e) at (11.05,0) {Sélection\\($\ge300$ points)};
+\draw[arr] (a)--(b); \draw[arr] (b)--(c); \draw[arr] (c)--(d); \draw[arr] (d)--(e);
+\node[b2] (f) at (1.0,-2.2)  {Série $d_i$\\(distances)};
+\node[b2] (g) at (3.3,-2.2)  {Estimation de $H$\\DFA, R/S, Whittle};
+\node[b2] (h) at (5.6,-2.2)  {Filtre\\\og gardé \fg{}};
+\node[b2] (i) at (8.3,-2.2)  {Détection d'arrêts\\200~m, 20~min};
+\node[b2] (j) at (10.6,-2.2) {Séjours et\\distances};
+\node[b2] (k) at (12.9,-2.2) {Clauset +\\4 alternatives};
+\draw[arr] (f)--(g); \draw[arr] (g)--(h); \draw[arr] (i)--(j); \draw[arr] (j)--(k);
+\draw[accent, thick] (e.south) -- ++(0,-0.55) coordinate (m);
+\draw[arr] (m) -| (f.north);
+\draw[arr] (m) -| (i.north);
+\node[font=\tiny, below=1mm of g] {+ test de dépassement AR($p$)};
+\node[font=\small\bfseries, accent] at (3.3,-3.6) {Branche $H$};
+\node[font=\small\bfseries, accent] at (10.6,-3.6) {Branche lois de puissance};
+\end{tikzpicture}}
+\end{frame}
+
+\begin{frame}{Prétraitement : quatre principes}
+\begin{enumerate}
+  \item \alert{Marquer avant de décider} : les points suspects sont signalés sans être retirés ; l'effet d'une coupure est mesuré à part
+  \item \alert{Seuils relatifs au contexte du segment}, bornés par des planchers ou plafonds absolus
+  \item \alert{Deux versions de chaque estimateur} : référence lisible et vectorisée, reliées par des tests de parité
+  \item \alert{Traçabilité} : empreinte de la configuration sur chaque ligne de résultats, graines fixées, tableaux produits par script
+\end{enumerate}
+\medskip
+Lecture : conversion en secondes UNIX (UTC), rejet des coordonnées hors bornes, tri par horodatage, suppression des doublons (premier conservé).
+\end{frame}
+
+\begin{frame}{Segmentation et calibration des seuils}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\fig[0.78]{graphe_5_heatmap.pdf}
+\column{0.43\textwidth}
+\begin{itemize}
+  \item Un trou $>T_{\mathrm{gap}}=900$~s ouvre un nouveau segment
+  \item \alert{Ni interpolation, ni raccord} : un saut artificiel fausse la DFA
+  \item Distribution des $\Delta t$ : aucun pic naturel \(\Rightarrow\) seuil \alert{externe}
+  \item Couple retenu $(900,\,300)$ : \textbf{91,3~\%} des points conservés ; médiane de \textbf{721 points} par segment
+  \item Décision d'ingénierie, entourée de valeurs proches (89,6 à 600~s ; 92,2 à 1\,200~s)
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Marquage des points suspects}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\footnotesize
+\begin{tabular}{@{}lp{4.6cm}@{}}
+\toprule
+Composant & Seuil \\
+\midrule
+Saut de distance & $\min(30\,\tilde d,\,500)$ m \\
+Vitesse maximale & $\min\bigl(200,\max(5,20\,\tilde v)\bigr)$ km/h \\
+Variation brutale & $\max(20,\,5\,\mathrm{MAD}_v)$ km/h \\
+Persistance (régime) & $\max(5,\mathrm{round}(0{,}01N))$ points \\
+\bottomrule
+\end{tabular}
+\medskip
+\normalsize
+Candidat : Z-score modifié $>3{,}5$.
+\column{0.46\textwidth}
+\begin{block}{Classification}
+\small
+\begin{itemize}
+  \item brutal et isolé $\Rightarrow$ \code{artefact}
+  \item soutenu $\Rightarrow$ \code{regime}
+  \item modéré et isolé $\Rightarrow$ non marqué
+\end{itemize}
+\end{block}
+\footnotesize
+Volumes : \code{suspect\_dist} 148\,203 (0,67~\%) ; \code{suspect\_vitesse} 273\,499 (1,25~\%).\\[1mm]
+\alert{Faiblesse} : dans un segment piéton (médiane 3~km/h), le seuil de vitesse tombe vers 60~km/h ; un trajet motorisé soutenu risque d'être classé en artefact.
+\end{columns}
+\end{frame}
+
+\begin{frame}{La série analysée : les distances $d_i$}
+\begin{block}{Ce que mesure $d_i$}
+$d_i=v_i\,\delta_i$ : la distance entre deux points GPS successifs mélange \alert{vitesse} et \alert{intervalle de temps}.
+\end{block}
+\begin{itemize}
+  \item Imposée par le cahier des charges ; mesure l'\alert{intensité} du déplacement, pas sa direction
+  \item Mode d'enregistrement \og distance \fg{} : la série décrit l'appareil
+  \item Contrôle prévu : analyse de la série des vitesses $v_i$ (option du code)
+  \item Stationnarité : test KS entre les deux moitiés ; $p<10^{-20}$ sur la quasi-totalité des segments gardés \(\Rightarrow\) indicateur peu discriminant
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Trois estimateurs de $H$}
+\footnotesize
+\begin{columns}[T]
+\column{0.32\textwidth}
+\begin{block}{DFA}
+Profil $Y(i)=\sum_{k\le i}(x_k-\bar x)$, fenêtres disjointes, droite retirée dans chacune.\\[1mm]
+$F(s)\sim s^{\alpha}$ : $\alpha=H$ (fGn), $\alpha=H+1$ (fBm).\\[1mm]
+20 échelles de $s_{\min}=4$ à $N/4$.
+\end{block}
+\column{0.32\textwidth}
+\begin{block}{R/S}
+Étendue $R(s)$ de la somme cumulée sur l'écart-type $S(s)$ :\\
+$\mathbb E[R/S]\sim c\,s^{H}$.\\[1mm]
+Pente \alert{brute} et pente \alert{corrigée} (Anis--Lloyd).\\[1mm]
+Blocs de 10 à $N/2$.
+\end{block}
+\column{0.32\textwidth}
+\begin{block}{Whittle local}
+Basses fréquences seulement ($m=N^{0{,}65}$) ; minimisation de $R(H)$ sur la grille $H_k=k/1001$.\\[1mm]
+Indicateur \code{whittle\_a\_la\_borne} : minimum sur une borne $\Rightarrow$ ce n'est pas une estimation.
+\end{block}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Validation sur séries de $H$ connu (fGn)}
+\begin{columns}[T]
+\column{0.60\textwidth}
+\fig[0.78]{graphe_1_validation.pdf}
+\column{0.38\textwidth}
+\small
+\begin{itemize}
+  \item 200 réalisations par cellule ; 2\,400 séries ($4$ valeurs de $H_0$, $3$ longueurs)
+  \item DFA et Whittle : biais proche de zéro ; RMSE $\le0{,}067$ (DFA) et $\le0{,}095$ (Whittle) à $N=300$
+  \item R/S corrigé : fiable pour $H\le0{,}5$, \alert{biais de $-0{,}149$} à $H_0=0{,}9$, $N=300$ : la correction sur-corrige les séries persistantes
+  \item \(\Rightarrow\) ne pas prendre le R/S comme référence indépendante pour valider un $H$ élevé
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Test de dépassement d'un modèle à mémoire courte}
+\begin{enumerate}
+  \item Transformer la série en loi normale à partir de ses rangs
+  \item Ajuster un AR($p$) par Yule--Walker, $p\le p_{\max}$ choisi par l'AIC
+  \item Simuler 99 séries AR($p$) de même longueur
+  \item Leur redonner la distribution de valeurs de la série observée (échange de rangs)
+\end{enumerate}
+\medskip
+$p$-valeur unilatérale : $p=\dfrac{1+\#\{h_{\mathrm{surr}}\ge h_{\mathrm{obs}}\}}{B+1}$
+\begin{alertblock}{Lecture}
+Le rejet dit : \og la dépendance n'est \emph{pas expliquée} par un AR($p$) \fg{}. Ce n'est \alert{pas} une preuve de mémoire longue : une alternance de régimes produit le même rejet.
+\end{alertblock}
+\end{frame}
+
+\begin{frame}{Le filtre de fiabilité : critère \og gardé \fg{}}
+Un segment est \alert{gardé} si et seulement si :
+\begin{enumerate}
+  \item les trois méthodes ont produit une valeur
+  \item $0<\hat H<1$ pour chacune des trois méthodes
+  \item le minimum de $R(H)$ du Whittle n'est pas sur une borne de la grille
+  \item la divergence (max $-$ min des trois estimations) est au plus de $0{,}15$
+\end{enumerate}
+\medskip
+\begin{itemize}
+  \item Drapeau \code{suspect} : divergence $>0{,}15$, ou $\hat H_{\mathrm{DFA}}>1$, ou $\hat H_{\mathrm{RS}}>1$, ou $\hat H_{\mathrm{Whittle}}>0{,}999$
+  \item Résultat : \textbf{7\,853} segments gardés sur 19\,150 (41,0~\%) ; 97,1~\% d'entre eux ont les trois méthodes $>0{,}5$
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Limite principale : la circularité du filtre}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\fig[0.78]{graphe_3_circularite.pdf}
+\column{0.48\textwidth}
+\begin{itemize}
+  \item Le filtre porte sur le résultat : la divergence utilise les $\hat H$ eux-mêmes
+  \item $|\hat H_{\mathrm{DFA}}-\hat H_{\mathrm{RS}}|$ moyen :\\ $0{,}079\to0{,}023$ (par utilisateur)\\ $0{,}152\to0{,}058$ (par segment)
+  \item Réduction \alert{acquise par construction}, pas une confirmation indépendante de l'accord des méthodes
+\end{itemize}
+\begin{alertblock}{À retenir}
+$\hat H_{\mathrm{gardés}}$ est un $\hat H$ \alert{conditionnel au filtre}, pas un $\hat H$ de population.
+\end{alertblock}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Arrêts et temps de séjour}
+\begin{itemize}
+  \item \alert{Fenêtre ancrée} (Li et al.) : pour chaque point $p_i$, premier $j$ tel que $\mathrm{dist}(p_i,p_j)>R_{\mathrm{arr}}$ ; si $t_j-t_i\ge T_{\min}$, arrêt localisé au centroïde
+  \item Réglage : $R_{\mathrm{arr}}=200$~m, $T_{\min}=1\,200$~s (20 min), école de Zheng et al. ; sensibilité sur 4 couples
+  \item \alert{Censure} : durées biaisées \emph{étiquetées}, jamais écartées silencieusement ; par défaut, ajustement sur les arrêts internes non censurés
+  \item Deux variables de distance :
+  \begin{itemize}
+    \item \code{distance} : même segment, 1\,283 paires (environ 87~\% des paires écartées)
+    \item \code{distance\_a\_cheval} : inclut les trous d'enregistrement, 10\,216 paires
+  \end{itemize}
+  \item Limites : détection sur les segments déjà retenus ; fragmentation d'un long séjour par le bruit GPS ; durée légèrement surestimée
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Lois de puissance : protocole}
+\begin{columns}[T]
+\column{0.50\textwidth}
+\begin{block}{Ajustement de Clauset}
+\small
+\begin{itemize}
+  \item Maximum de vraisemblance de $\alpha$
+  \item $x_{\min}$ par distance KS (200 candidats, queue $\ge50$)
+  \item Adéquation : bootstrap semi-paramétrique, $B=1\,000$
+  \item Rejet si $p\le0{,}1$
+\end{itemize}
+\end{block}
+\column{0.48\textwidth}
+\begin{block}{Alternatives}
+\small
+\begin{itemize}
+  \item Exponentielle, log-normale, Weibull, loi \alert{tronquée} $x^{-\alpha}e^{-\lambda x}$
+  \item Vuong (non emboîtés), $\chi^2$ (tronquée vs pure)
+  \item Poids d'Akaike corrigés (AICc)
+\end{itemize}
+\end{block}
+\end{columns}
+\begin{alertblock}{Adéquation de la tronquée}
+Poids AICc = meilleur modèle \emph{du catalogue}, pas bon ajustement. Test bootstrap ($B=200$, $x_{\min}$ fixé) : moins exigeant que Clauset, donc $p>0{,}1$ ne prouve rien, tandis que $p\le0{,}1$ est un rejet net.
+\end{alertblock}
+\end{frame}
+
+% =====================================================================
+\section{Résultats sur l'exposant de Hurst}
+% =====================================================================
+
+\begin{frame}{Sept hypothèses, sept verdicts}
+\footnotesize
+\begin{tabular}{@{}l p{4.6cm} p{6.4cm}@{}}
+\toprule
+ & Énoncé & Verdict \\
+\midrule
+H1 & Estimateurs fiables sur fGn & DFA et Whittle confirmés ; R/S infirmé pour $H\ge0{,}7$ \\
+H2 & Un régime fait rejeter le nul AR($p$) & atteint pour $p_{\max}=1$ (100~\% à $N=1000$), pas pour $p_{\max}=5$ (19~\%) \\
+H3 & Corrélation $\rho_1$--$H$ & confirmée ($\rho_S=0{,}859$) \\
+H4 & Un AR(1) reproduit les taux du corpus & infirmée (corpus 20,3~\% ; AR(1) : 2 à 6~\%) \\
+H5 & Mobile / non mobile à $\rho_1$ fixé & confirmée mais fragile ($\Delta=+0{,}057$) \\
+H6 & Test nul calibré à $\rho_1=0$ & confirmée (5,25~\% de faux positifs) \\
+H7 & Corpus invalide pour $H$ & infirmée (82,9~\% de segments valides) \\
+\bottomrule
+\end{tabular}
+\medskip
+\normalsize
+Le taux de rejet du corpus (20,3~\%) est du même ordre qu'un modèle à régimes (19~\%) ou qu'un fGn de $H=0{,}6$ (16~\%).
+\end{frame}
+
+\begin{frame}{Distribution de $\hat H$ : tous les segments contre les gardés}
+\footnotesize
+\centering
+\begin{tabular}{lccc}
+\toprule
+Population & $\hat H_{\mathrm{DFA}}$ & $\hat H_{\mathrm{RS}}$ & $\hat H_{\mathrm{Whittle}}$ \\
+\midrule
+Tous segments (145 utilisateurs) & 0,834 & 0,776 & 0,802 \\
+Segments gardés (136 utilisateurs) & \textbf{0,726} & \textbf{0,723} & \textbf{0,728} \\
+Gardés, pondérés par $n_{\mathrm{gardés}}$ & 0,741 & 0,731 & 0,740 \\
+\bottomrule
+\end{tabular}
+\\[2mm]
+\fig[0.50]{graphe_2_distribution.pdf}
+\\[1mm]
+\normalsize
+Le filtre agit surtout sur la DFA ($-0{,}11$) : \alert{changement de population}, pas gain de précision.
+\end{frame}
+
+\begin{frame}{Dispersion entre utilisateurs}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\fig[0.80]{graphe_4_user_ic.pdf}
+\column{0.46\textwidth}
+\begin{itemize}
+  \item 126 utilisateurs avec au moins 2 segments gardés ; IC à 95~\% par bootstrap sur les segments
+  \item Les cinq plus gros utilisateurs portent \textbf{25,4~\%} des segments gardés
+  \item Utilisateurs à faible effectif : intervalles qui se recouvrent \(\Rightarrow\) ordre non significatif
+  \item $n_{\mathrm{gardés}}\ge50$ : $0{,}738\pm0{,}038$ ; $<10$ : $0{,}712\pm0{,}096$
+  \item 9 utilisateurs sans segment gardé (six avec $\hat H_{\mathrm{DFA}}>1$ partout)
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Ce que signifie $\hat H_{\mathrm{DFA}}\approx0{,}726$}
+\begin{alertblock}{Message}
+Ce chiffre \alert{n'est pas} une mesure de la mémoire longue du déplacement : il décrit ce que la DFA produit sur la série $d_i$ filtrée.
+\end{alertblock}
+\begin{itemize}
+  \item Le filtre dépend de $H$ lui-même (circularité)
+  \item La série mélange vitesse et rythme d'enregistrement
+  \item Les segments sont fortement non stationnaires
+  \item À $\rho_1$ contrôlé, la DFA distingue un fGn d'un AR(1) d'environ $0{,}07$ : du même ordre que sa RMSE \(\Rightarrow\) séparation statistique (19\,150 segments), pas pratique (segment par segment)
+  \item Test AR($p$) : 20,3~\% de rejets contre 5~\% nominal, mais compatibles avec des régimes
+\end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Résultats sur les lois de puissance}
+% =====================================================================
+
+\begin{frame}{Résultats agrégés (137 utilisateurs)}
+\footnotesize
+\begin{tabular}{@{}lrrcll@{}}
+\toprule
+Variable & $n$ & $\hat\alpha$ & $p_{\mathrm{boot}}$ & Verdict & Meilleur AICc \\
+\midrule
+\code{sejour} & 5\,354 & $3{,}186\pm0{,}031$ & 0,159 & alternative meilleure & tronquée (0,967) \\
+\code{distance} (même seg.) & 1\,283 & $2{,}026\pm0{,}084$ & 0,055 & rejetée & loi pure (0,528) \\
+\code{sejour\_avec\_censurees} & 13\,378 & $2{,}365\pm0{,}029$ & $<0{,}001$ & rejetée & loi pure (0,577) \\
+\code{distance\_a\_cheval} & 10\,216 & $1{,}779\pm0{,}012$ & $<0{,}001$ & rejetée & tronquée (0,511) \\
+\bottomrule
+\end{tabular}
+\normalsize
+\bigskip
+\begin{itemize}
+  \item Loi pure rejetée pour \alert{3 variables sur 4} (seul \code{sejour} n'est pas rejeté)
+  \item Tronquée préférée pour \code{sejour} (poids 0,967 ; $p_{\mathrm{RV}}=0{,}0002$) et, de façon marginale, pour \code{distance\_a\_cheval} ($p_{\mathrm{RV}}=0{,}099$)
+  \item Jeu de seuils : 200~m, 20~min
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Poids d'Akaike des cinq modèles}
+\centering
+\fig[0.62]{graphe_10_aicc.pdf}
+\\[1mm]
+\small
+Aucun modèle ne s'impose pour \code{distance} et \code{sejour\_avec\_censurees} (poids $\approx0{,}5$) ; la tronquée domine pour \code{sejour}.
+\end{frame}
+
+\begin{frame}{La loi gagnante est-elle adéquate ?}
+\begin{columns}[T]
+\column{0.55\textwidth}
+\fig[0.72]{graphe_11_pvalues.pdf}
+\column{0.43\textwidth}
+\small
+\begin{itemize}
+  \item Loi pure (Clauset) : seul \code{sejour} n'est pas rejeté ($p=0{,}159$)
+  \item Tronquée (bootstrap, $B=200$) :
+  \begin{itemize}
+    \item \code{sejour} : \alert{rejetée} ($p<0{,}005$), rejet net
+    \item \code{distance\_a\_cheval} : $p=1{,}000$, artefact ($\lambda\to0$)
+    \item \code{distance} et \code{sejour\_avec\_censurees} : non rejetée, sans conclusion
+  \end{itemize}
+  \item Les deux tests diffèrent : leurs $p$-valeurs ne se comparent pas directement
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Durées de séjour : coupure vers 4,7 heures}
+\begin{columns}[T]
+\column{0.60\textwidth}
+\fig[0.60]{graphe_9_ccdf_sejour.pdf}     % <-- MODIFIÉ : 0.74 -> 0.60
+\column{0.38\textwidth}
+\footnotesize                              % <-- MODIFIÉ : \small -> \footnotesize
+\begin{itemize}
+  \item $\hat\alpha=3{,}186$ ; tronquée : $\lambda=5{,}92\times10^{-5}$~s$^{-1}$, soit $1/\lambda\approx4{,}7$~h
+  \item Échelle \alert{proche du maximum observé} ($\approx5{,}5$~h) \(\Rightarrow\) interprétation ambiguë : coupure réelle, fenêtre d'observation finie, ou mélange d'utilisateurs hétérogènes
+  \item La tronquée gagne en AICc (elle suit la courbure vers $10^4$~s) mais échoue à l'adéquation (les observations plongent plus vite)
+  \item $\hat\alpha=3{,}19$ nettement plus grand que $\approx1{,}8$ rapporté par Song et al. : définitions et données différentes
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Les trois autres variables}
+\centering
+\fig[0.40]{graphe_13_ccdf_autres.pdf}
+\footnotesize
+\begin{columns}[T]
+\column{0.31\textwidth}
+\textbf{\code{distance} (même segment)}\\
+$\hat\alpha=2{,}026$, $p=0{,}055$ : rejetée ; la loi pure reste la mieux classée. Cas \alert{ambigu}.
+\column{0.31\textwidth}
+\textbf{\code{sejour\_avec\_censurees}}\\
+$\hat\alpha=2{,}365$, $x_{\min}\approx8{,}3$~h : inclut les pauses entre segments (appareil éteint) \(\Rightarrow\) distribution probablement \alert{bimodale}.
+\column{0.31\textwidth}
+\textbf{\code{distance\_a\_cheval}}\\
+$\hat\alpha=1{,}779$ ; $\lambda\to0$ ($1/\lambda\approx1{,}5\times10^5$~km) : la tronquée ne coupe rien. Plateau puis coupure brutale vers $10^7$~m.
+\end{columns}
+\end{frame}
+
+\begin{frame}{Sensibilité aux seuils d'arrêt}
+\begin{columns}[T]
+\column{0.52\textwidth}
+\fig[0.70]{graphe_12_sensibilite.pdf}
+\column{0.46\textwidth}
+\footnotesize
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Jeu & $n_{\mathrm{séj.}}$ & $\alpha_{\mathrm{séj.}}$ & $n_{\mathrm{dist.}}$ & $\alpha_{\mathrm{dist.}}$ \\
+\midrule
+100 m / 5 min & 32\,110 & 3,12 & 13\,806 & 1,89 \\
+100 m / 10 min & 14\,185 & 3,18 & 4\,064 & 1,82 \\
+200 m / 20 min & 5\,354 & 3,19 & 1\,283 & 2,03 \\
+200 m / 30 min & 2\,789 & 3,42 & 428 & 1,54 \\
+\bottomrule
+\end{tabular}
+\normalsize
+\medskip
+\begin{itemize}
+  \item $\alpha_{\mathrm{séjour}}>3$ aux quatre jeux : résultat \alert{robuste}
+  \item $\alpha_{\mathrm{distance}}=1{,}54$ : petit échantillon ($n=428$)
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Lien avec l'alternance mouvement / arrêt (ON/OFF)}
+\begin{block}{Relation théorique}
+Phases ON/OFF à queue de survie $t^{-a}$, $1<a<2$ :
+\[
+H=\frac{3-a}{2}=\frac{4-\alpha}{2},\qquad 2<\alpha<3
+\]
+\end{block}
+\small
+Résultat de Taqqu, Willinger et Sherman : \emph{superposition} de nombreuses sources ; pour un individu, hypothèse de travail.
+\medskip
+\begin{tabular}{@{}lrlll@{}}
+\toprule
+Variable de durée & $\alpha$ & Dans $]2,3[$ ? & $H_{\mathrm{pred}}$ & Fiabilité \\
+\midrule
+\code{sejour} & 3,19 & non & --- & --- \\
+\code{sejour\_avec\_censurees} & 2,37 & oui & 0,817 & très faible (bimodale) \\
+\bottomrule
+\end{tabular}
+\medskip
+\begin{itemize}
+  \item \alert{Aucune prédiction solide} ; le script ON/OFF a un défaut (un seul exposant par lot de durées) : partie réelle à corriger puis régénérer
+\end{itemize}
+\end{frame}
+
+% =====================================================================
+\section{Discussion et conclusion}
+% =====================================================================
+
+\begin{frame}{Limites d'ensemble}
+\begin{itemize}
+  \item \alert{Circularité} du filtre : $\hat H_{\mathrm{gardés}}$ conditionnel, pas populationnel
+  \item \alert{Validité de construit} : $d_i$ mêle vitesse et intervalle de temps
+  \item \alert{Mémoire longue ou régimes} : le test de dépassement ne les distingue pas
+  \item \alert{Non-stationnarité} : $\hat H$ effectif, pas celui d'un processus stationnaire
+  \item \alert{Un seul jeu de données} exploitable (T-Drive écarté)
+  \item \alert{Lois de puissance} : données agrégées ; test d'adéquation de la tronquée peu exigeant ; 37 utilisateurs exclus par le seuil de 300 points ; 15 utilisateurs seulement avec $\ge100$ séjours (typologie impossible en l'état)
+\end{itemize}
+\end{frame}
+
+\begin{frame}{Perspectives}
+\begin{block}{Départager mémoire longue et régimes (priorité)}
+\small
+\begin{itemize}
+  \item Test de Berkes et al. : nulle = mémoire courte avec ruptures de moyenne
+  \item Test de Qu : nulle = mémoire longue stationnaire contre régime ou tendance
+  \item Invariance de $d$ par agrégation temporelle (Ohanissian et al.)
+  \item Mesurer taille et puissance de ces tests par simulation ; modèle nul à régimes
+\end{itemize}
+\end{block}
+\begin{columns}[T]
+\column{0.48\textwidth}
+\small
+\textbf{Changer de série}
+\begin{itemize}
+  \item pas régulier (temps physique)
+  \item temps d'événement (distances entre arrêts)
+\end{itemize}
+\column{0.48\textwidth}
+\small
+\textbf{Autres pistes}
+\begin{itemize}
+  \item segmentation par labels de transport
+  \item vraisemblance avec censure
+  \item typologie et cartographie des zones de mémoire
+\end{itemize}
+\end{columns}
+\end{frame}
+
+\begin{frame}{Conclusion}
+\begin{block}{Exposant de Hurst}
+$\hat H_{\mathrm{DFA}}\approx0{,}726$ sur les segments gardés de GeoLife : une persistance locale dont la robustesse aux régimes et au bruit d'échantillonnage n'est pas établie. La mémoire longue \alert{n'est pas démontrée}, ni écartée.
+\end{block}
+\begin{block}{Lois de puissance}
+Loi pure rejetée pour 3 variables sur 4 ; la tronquée est préférée pour les séjours (coupure $\approx4{,}7$~h) mais rejetée à l'adéquation. Lien ON/OFF non testable de façon fiable.
+\end{block}
+\begin{block}{Apport}
+Une chaîne complète, validée par simulation, qui \alert{ne cache pas ce qui limite l'interprétation}.
+\end{block}
+\end{frame}
+
+\begin{frame}[plain]
+\centering
+\vfill
+{\Huge Merci de votre attention}\\[8mm]
+{\Large Questions ?}
+\vfill
+\end{frame}
+
+% =====================================================================
+%  ANNEXES (diapositives de secours pour les questions)
+% =====================================================================
+\appendix
+
+\begin{frame}{Annexe : distribution des intervalles $\Delta t$}
+\centering
+\fig[0.62]{graphe_8_deltas.pdf}
+\\[1mm]\small
+Pics à 1--10~s : résolution des horodatages ; au-delà, décroissance monotone sans mode secondaire.
+\end{frame}
+
+\begin{frame}{Annexe : longueurs des segments retenus}
+\centering
+\fig[0.62]{graphe_7_longueurs.pdf}
+\\[1mm]\small
+Médiane de 721 points ; 66~\% des segments ont moins de 1\,000 points.
+\end{frame}
+
+\begin{frame}{Annexe : biais et RMSE des estimateurs sur fGn}
+\footnotesize
+\centering
+\begin{tabular}{rrrrrrrr}
+\toprule
+$H_0$ & $N$ & \multicolumn{2}{c}{DFA} & \multicolumn{2}{c}{R/S corrigé} & \multicolumn{2}{c}{Whittle} \\
+ & & biais & RMSE & biais & RMSE & biais & RMSE \\
+\midrule
+0,5 & 300  & $+0{,}032$ & 0,065 & $+0{,}004$ & 0,056 & $+0{,}002$ & 0,091 \\
+0,7 & 300  & $+0{,}011$ & 0,061 & $-0{,}065$ & 0,093 & $-0{,}000$ & 0,095 \\
+0,9 & 300  & $+0{,}011$ & 0,067 & $-0{,}149$ & 0,161 & $-0{,}002$ & 0,081 \\
+0,7 & 1000 & $+0{,}007$ & 0,039 & $-0{,}048$ & 0,063 & $-0{,}001$ & 0,059 \\
+0,9 & 1000 & $+0{,}002$ & 0,045 & $-0{,}121$ & 0,127 & $+0{,}001$ & 0,052 \\
+\bottomrule
+\end{tabular}
+\end{frame}
+
+\begin{frame}{Annexe : paramètres clés du pipeline}
+\footnotesize
+\begin{tabular}{@{}ll@{\hspace{10mm}}ll@{}}
+\toprule
+Paramètre & Valeur & Paramètre & Valeur \\
+\midrule
+Trou de segmentation & 900~s & Rayon / durée d'arrêt & 200~m / 1\,200~s \\
+Points minimaux & 300 & Distance min. entre arrêts & 100~m \\
+Z-score modifié & 3,5 & Queue minimale (Clauset) & 50 \\
+Seuil de divergence & 0,15 & Bootstrap Clauset & 1\,000 \\
+Échelles DFA & 20 ($4$ à $N/4$) & Seuil de rejet & $p\le0{,}1$ \\
+Whittle : $m$ & $N^{0{,}65}$ & Surrogats AR($p$) & 99, $p_{\max}=5$ \\
+Graine & 20261018 & Obs. min. par utilisateur & 100 \\
+\bottomrule
+\end{tabular}
+\end{frame}
+
+% --- OPTIONNEL : illustration (analyse faite hors mémoire ; supprimer si inutile)
+\begin{frame}{Annexe (optionnel) : pourquoi un $H$ peut être aberrant, exemple du segment 0}
+\small
+\begin{itemize}
+  \item Segment 0 : 1\,667 points ; $\hat H_{\mathrm{DFA}}=0{,}872$, $\hat H_{\mathrm{RS}}=0{,}681$, $\hat H_{\mathrm{Whittle}}=0{,}849$ ; divergence $0{,}191$ \(\Rightarrow\) \alert{suspect}
+  \item Un épisode de 34 pas (2~\% du segment), probablement une dérive GPS, non marqué par le filtre
+  \item En le neutralisant : DFA $0{,}747$, R/S $0{,}639$, Whittle $0{,}694$ ; divergence $0{,}108$ \(\Rightarrow\) segment gardé
+  \item Placebo (34 pas ailleurs) : $\hat H$ inchangé
+\end{itemize}
+\medskip
+Les logs signalent les points, pas l'épisode qui pèse sur $H$.
+\end{frame}
+
+\end{document}

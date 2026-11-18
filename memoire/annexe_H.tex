@@ -1,0 +1,1233 @@
+% =====================================================================
+%  Annexe technique : du fichier GPS brut au paramètre de Hurst
+%  Description complète du pipeline avec formules et justifications
+%  Compilation : xelatex annexe_H.tex
+% =====================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{fontspec}
+\usepackage[french]{babel}
+\usepackage[top=2.5cm,bottom=2.5cm,left=2.8cm,right=2.5cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs,array,longtable}
+\usepackage{graphicx}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black,
+            citecolor=blue!50!black}
+
+\theoremstyle{definition}
+\newtheorem{definition}{Définition}
+\newtheorem{remarque}{Remarque}
+\newtheorem{propriete}{Propriété}
+
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\dC}[1]{\texttt{\detokenize{#1}}}  % nom de fichier
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\E}{\mathbb{E}}
+
+\title{\textbf{Du fichier GPS brut au paramètre de Hurst}\\[2mm]
+\large Description complète du pipeline, formules et justifications}
+\author{Annexe technique}
+\date{Novembre 2026}
+
+\begin{document}
+
+\maketitle
+
+\tableofcontents
+
+\vspace{1cm}
+\noindent\textbf{Objet.} Ce document décrit, étape par étape, le chemin qui mène
+d'un fichier GPS GeoLife \code{.plt} aux paramètres de Hurst $\hat H_{\mathrm{DFA}}$,
+$\hat H_{\mathrm{RS}}$ et $\hat H_{\mathrm{Whittle}}$ par segment, puis aux valeurs
+« gardées » et « fortes » agrégées par utilisateur. Chaque section indique les
+fichiers et fonctions du code correspondants, et justifie les formules par la
+littérature. La section~\ref{sec:lois-puissance} décrit la seconde branche du
+mémoire, consacrée à l'analyse des lois de puissance sur les durées de séjour et
+les distances entre arrêts.
+
+\section{Vue d'ensemble}
+
+Le pipeline enchaîne six étapes :
+
+\begin{enumerate}[leftmargin=1.4em]
+  \item \textbf{Lecture et nettoyage} : convertir les lignes GPS brutes en une série
+  temporelle valide. Fichiers : \dC{lecture.py}, \dC{nettoyage.py}, \dC{tri.py}.
+  \item \textbf{Segmentation} : découper chaque trajet en segments continus. Fichier :
+  \dC{segmentation.py}.
+  \item \textbf{Statistiques de segment} : pas médian, distance médiane, dispersion.
+  Fichier : \dC{stats_segment.py}.
+  \item \textbf{Marquage des points suspects} : détecter les artefacts GPS par distance
+  et par vitesse. Fichier : \dC{filtres.py}.
+  \item \textbf{Sélection finale} : retenir les segments exploitables. Fichier :
+  \dC{segmentation.py} (\code{filtrer_segments}, \code{filtrer_segments_stationnaires}).
+  \item \textbf{Estimation et filtrage de H} : trois estimateurs, un test à mémoire
+  courte, puis un filtre de fiabilité. Fichiers : \dC{hurst/*.py},
+  \dC{03_estimation_H.py}, \dC{H_valides.py}.
+\end{enumerate}
+
+Les étapes 1–5 sont dans \dC{01_pretraitement.py}, l'étape 6 dans
+\dC{03_estimation_H.py} et \dC{H_valides.py}.
+
+\section{Étape 1 : lecture, nettoyage, tri}
+
+\subsection{Format d'entrée}
+
+Un fichier GeoLife \code{.plt} contient six lignes d'en-tête suivies d'une ligne par
+point :
+\[
+  \underbrace{\text{latitude},}_{\phi} \;
+  \underbrace{\text{longitude},}_{\lambda} \;
+  0, \;
+  \text{altitude (pieds)}, \;
+  \text{jour julien}, \;
+  \text{date}, \;
+  \text{heure (GMT)}
+\]
+La fonction \code{lire_dossier_utilisateur} de \dC{lecture.py} convertit chaque date
+et heure en secondes UNIX \emph{en UTC}. L'altitude $-777$ signale une mesure
+invalide ; elle est ignorée car seules les positions horizontales entrent dans la
+série.
+
+\subsection{Nettoyage}
+
+La fonction \code{nettoyer_points} de \dC{nettoyage.py} rejette un point si :
+\begin{itemize}[leftmargin=1.4em]
+  \item la latitude $\phi \notin [-90^\circ, 90^\circ]$, ou la longitude
+  $\lambda \notin [-180^\circ, 180^\circ]$ ;
+  \item l'horodatage est nul ou négatif.
+\end{itemize}
+
+\subsection{Tri et déduplication}
+
+L'ordre des opérations est : nettoyage $\to$ tri par horodatage $\to$ suppression
+des doublons. Parmi des points consécutifs de même horodatage, le premier est
+conservé (fonction \code{supprimer_doublons} de \dC{tri.py}).
+
+\begin{remarque}
+La documentation de \code{supprimer_doublons} mentionne « même position et même
+horodatage » comme critère, mais le code teste uniquement l'horodatage. Si deux
+positions distinctes portent le même timestamp, la seconde est perdue. Ce choix
+n'a pas d'effet mesuré sur $\hat H$.
+\end{remarque}
+
+\section{Étape 2 : segmentation temporelle}
+
+\subsection{Règle de coupure}
+
+Un segment est un intervalle maximal entre deux coupures. La fonction
+\code{segmenter_points} de \dC{segmentation.py} coupe dès que :
+\begin{equation}
+  t_i - t_{i-1} > T_{\mathrm{gap}},
+  \label{eq:segmentation}
+\end{equation}
+avec $T_{\mathrm{gap}} = \code{TIME_GAP_THRESHOLD} = 900$~s (15~min).
+
+\subsection{Justification}
+
+Les estimateurs de $H$ supposent une série temporellement continue (ou à
+accroissements stationnaires). Un trou d'enregistrement de plusieurs minutes est un
+changement de régime d'échantillonnage : la série $\{d_i\}$ contiendrait alors un
+point aberrant correspondant au déplacement pendant le trou, qui n'est pas
+représentatif de la dynamique intra-segment.
+
+\begin{remarque}
+Aucune interpolation n'est faite, et les segments ne sont jamais raccordés. Combler
+un trou ou raccorder deux morceaux fabriquerait un saut artificiel dans la série des
+distances, auquel la DFA est très sensible~\cite{chen2002}.
+
+Le seuil de 900~s a été calibré empiriquement (voir \code{audit_grille.py}) : il
+n'existe pas de « mode naturel » dans la distribution des $\Delta t$ au-delà de la
+résolution native de GeoLife (1--10~s).
+\end{remarque}
+
+\section{Étape 3 : statistiques de segment}
+
+Pour un segment de $N$ points, la fonction \code{calculer_stats_segment} de
+\dC{stats_segment.py} calcule en une passe vectorisée :
+
+\begin{itemize}[leftmargin=1.4em]
+  \item les distances inter-points $d_i$ (voir §\ref{sec:distances}),
+  les écarts de temps $\delta_i = t_i - t_{i-1}$,
+  et les vitesses $v_i = d_i / (\delta_i / 3600)$ en km/h ;
+  \item les médianes $\tilde d$ (distance) et $\tilde v$ (vitesse), plus robustes
+  aux valeurs extrêmes que les moyennes ;
+  \item l'écart-type $\sigma_v$ des vitesses, et le \emph{ratio d'hétérogénéité}
+  \[
+    R = \frac{\sigma_v}{\tilde v} ;
+  \]
+  \item le \emph{pas médian} $\bar{\delta} = \mathrm{med}(\delta_i)$ ;
+  \item les distances médiane $\tilde d$ et maximale $d_{\max}$, la distance totale
+  $D = \sum_i d_i$.
+\end{itemize}
+
+Le ratio $R$ sert uniquement à l'alerte d'hétérogénéité (voir §\ref{sec:marquage}) :
+si $R > 1{,}5$, le segment est signalé comme hétérogène, mais aucun point n'est
+marqué en conséquence.
+
+\section{Étape 4 : marquage des points suspects}
+\label{sec:marquage}
+
+Le fichier \dC{filtres.py} implémente deux filtres indépendants, appliqués dans
+l'ordre \code{ORDRE_FILTRES} (par défaut : distance puis vitesse).
+
+\subsection{Filtre de distance}
+\label{subsec:filtre-distance}
+
+La fonction \code{filtrer_saut_distance} marque le point $i$ si
+$d_i > d_{\max}$, où en mode relatif (V5) :
+\begin{equation}
+  d_{\max} = \min\bigl(30 \times \tilde d,\; 500\bigr) \quad \text{(mètres)}.
+  \label{eq:filtre-distance}
+\end{equation}
+Le facteur $30$ est le multiplicateur de la distance médiane du segment
+(\code{MAX_DIST_M = 30}), et $500$~m est le plafond absolu
+(\code{MAX_DIST_M_ABSOLU = 500}).
+
+\paragraph{Justification du mode relatif.} Un saut de 400~m dans un segment de
+marche ($\tilde d \approx 3$~m) est aberrant, alors qu'un saut de 400~m dans un
+segment de train ($\tilde d \approx 100$~m) ne l'est pas nécessairement. Le seuil
+relatif s'adapte au contexte du segment. Le plafond absolu empêche qu'un segment à
+très grand pas (avion, TGV) laisse passer un saut gigantesque sous prétexte que
+$30 \times \tilde d$ serait encore plus grand.
+
+\subsection{Filtre de vitesse}
+\label{subsec:filtre-vitesse}
+
+La fonction \code{filtrer_vitesse} implémente le Z-score modifié asymétrique
+d'Iglewicz et Hoaglin~\cite{iglewicz1993}. Le Z-score standard
+$z_i = (v_i - \bar v)/\sigma_v$ est sensible aux valeurs extrêmes ; le Z-score
+modifié remplace la moyenne et l'écart-type par la médiane et le MAD :
+\begin{equation}
+  Z_i = \frac{0{,}6745\,(v_i - \tilde v)}{\mathrm{MAD}},
+  \qquad
+  \mathrm{MAD} = \mathrm{med}\bigl(|v_i - \tilde v|\bigr).
+  \label{eq:zscore}
+\end{equation}
+Le facteur $0{,}6745 = \Phi^{-1}(3/4)$ est le rapport entre le MAD et l'écart-type
+d'une loi normale centrée : il aligne le Z-score modifié sur l'échelle d'un z-score
+standard~\cite{leys2013}.
+
+\paragraph{Asymétrie.} Le Z-score n'est calculé que pour $v_i > \tilde v$ :
+\[
+  Z_i = \begin{cases}
+    \dfrac{0{,}6745\,(v_i - \tilde v)}{\mathrm{MAD}} & \text{si } v_i > \tilde v, \\[2mm]
+    0 & \text{sinon.}
+  \end{cases}
+\]
+Une vitesse basse (arrêt, ralentissement) n'est jamais un artefact : elle est
+légitime dans une trajectoire. Seules les vitesses \emph{supérieures} à la médiane
+peuvent être candidates.
+
+\paragraph{Seuil candidat.} Un point est candidat si
+\[
+  Z_i > \code{MAD_Z_SEUIL} = 3{,}5
+  \quad \text{ou} \quad
+  v_i > v_{\max},
+\]
+où $v_{\max}$ est le seuil absolu (V5 : $\min(200, \max(5, 20\tilde v))$~km/h).
+
+\paragraph{Classification des candidats.} Un candidat isolé de variation brutale
+$\Delta v = |v_i - v_{i-1}| > \max(20, 5\,\mathrm{MAD}_v)$ est un \emph{artefact}
+(glitch GPS ponctuel). Un cluster de candidats consécutifs de longueur
+$\geq \max(5, \mathrm{round}(0{,}01\,N))$ est un \emph{régime} (changement de mode
+de transport). Dans les deux cas, seul le premier point du cluster est marqué
+(\code{type_suspect_vitesse = "artefact"} ou \code{"regime"}).
+
+\paragraph{Alerte d'hétérogénéité.} Si $R = \sigma_v/\tilde v > 1{,}5$, une alerte
+globale \code{alerte_heterogene = True} est portée par le segment entier. Aucun
+point n'est marqué en conséquence : c'est une note pour l'interprétation.
+
+\begin{remarque}
+Les points \code{regime} ne sont jamais des points de coupure dans
+\code{couper_aux_points_marques}. Seuls les points \code{artefact} et
+\code{suspect_dist} déclenchent une coupure. La variante
+$\hat H_{\mathrm{morceaux}}$ (section §\ref{sec:morceaux}) utilise cette coupure
+\emph{sans raccorder} les morceaux, ce qui évite le défaut de la V4 (raccordement
+qui fabrique un saut).
+\end{remarque}
+
+\section{Étape 5 : sélection finale des segments}
+
+Deux filtres retiennent les segments exploitables. La fonction
+\code{filtrer_segments} impose :
+\[
+  N \geq \code{MIN_POINTS} = 300.
+\]
+La fonction \code{filtrer_segments_stationnaires} impose :
+\[
+  D = \sum_{i=1}^{N-1} d_i \geq \delta_{\min}(\text{segment}),
+\]
+où en mode relatif (V5) :
+\begin{equation}
+  \delta_{\min}(\text{segment}) = \max\left(
+    \code{DISTANCE_MIN},\;
+    \frac{\code{MIN_POINTS} \times \bar{\delta} \times V_{\mathrm{plancher}}}{3600}
+  \right).
+  \label{eq:distance-min}
+\end{equation}
+avec \code{DISTANCE_MIN} $= 0{,}1$~km et $V_{\mathrm{plancher}} = 1$~km/h
+(vitesse de « marche lente »).
+
+\paragraph{Justification.} Un segment à pas médian $5$~s et un segment à pas médian
+$60$~s n'ont pas le même sens physique pour le même « 0,1~km ». La formule
+\eqref{eq:distance-min} exige qu'un segment ait parcouru au moins la distance qu'un
+marcheur lent aurait parcourue dans le même nombre de pas. Sur GeoLife
+($\bar{\delta} \approx 7$~s), le seuil effectif passe de $0{,}1$~km à
+$0{,}583$~km : environ $5{,}8$ fois plus strict.
+
+\begin{remarque}
+Le nom \code{filtrer_segments_stationnaires} est trompeur : ce n'est pas un test
+de stationnarité statistique, c'est un filtre de distance minimale. Le nom vient
+d'une ancienne version où l'on assimilait « immobile » à « stationnaire ». Le vrai
+test de stationnarité est celui de la section §\ref{sec:statio} (mais il n'est pas
+implémenté dans le code actuel).
+\end{remarque}
+
+\section{Construction de la série des distances}
+\label{sec:distances}
+
+Pour un segment de $N$ points $\{(p_1, \dots, p_N)\}$ avec
+$p_i = (\phi_i, \lambda_i, t_i)$, la série transmise aux estimateurs est
+$\{d_1, d_2, \dots, d_{N-1}\}$ où $d_i$ est la distance de haversine entre
+$p_i$ et $p_{i+1}$ :
+\begin{equation}
+  a_i = \sin^2\!\Bigl(\frac{\phi_{i+1} - \phi_i}{2}\Bigr)
+        + \cos\phi_i \cos\phi_{i+1} \sin^2\!\Bigl(\frac{\lambda_{i+1} - \lambda_i}{2}\Bigr),
+  \quad
+  c_i = 2 \arctan_2\bigl(\sqrt{a_i}, \sqrt{1-a_i}\bigr),
+  \quad
+  d_i = R \cdot c_i,
+  \label{eq:haversine}
+\end{equation}
+avec $R = 6\,371$~km (rayon terrestre moyen). La fonction
+\code{haversine_vectorise} de \dC{geodesie.py} implémente \eqref{eq:haversine}
+en numpy ; $d_i$ est exprimé en mètres.
+
+\begin{remarque}[Série $d_i$ : intensité, pas direction]
+La série $d_i$ mesure l'intensité du déplacement à chaque pas de temps, pas la
+direction. Un $H$ élevé traduit la persistance de périodes de mouvement intense
+ou d'immobilité, pas celle de la trajectoire dans l'espace. La série mélange aussi
+vitesse et intervalle de temps, puisque $d_i = v_i \cdot \delta_i$. L'option
+\code{--serie vitesse} utilise $v_i$ pour mesurer si les conclusions dépendent de
+ce choix.
+\end{remarque}
+
+% =====================================================================
+\section{Étape 6a : estimation de H par segment}
+\label{sec:estimation}
+% =====================================================================
+
+La fonction \code{estimer_segment} de \dC{estimation_segment.py} applique
+successivement les trois estimateurs et le test nul à la série $x = \{d_1, \dots,
+d_{N-1}\}$ (ou $x = \{v_i\}$ si \code{--serie vitesse}). Nous décrivons chaque
+estimateur.
+
+\subsection{Préliminaire : profil cumulé (DFA)}
+
+Soit $x_1, \dots, x_n$ la série d'entrée ($n = N-1$), et $\bar x$ sa moyenne.
+Le \emph{profil cumulé} est défini par :
+\begin{equation}
+  Y(k) = \sum_{i=1}^{k}(x_i - \bar x), \qquad k = 1, \dots, n.
+  \label{eq:profil}
+\end{equation}
+On a $Y(n) = 0$ par construction. $Y(k)$ représente l'écart cumulé à la moyenne,
+c'est-à-dire la « marche » de la série.
+
+\subsection{DFA : Detrended Fluctuation Analysis}
+
+\subsubsection{Échelles}
+
+On choisit $n_s = 20$ échelles $s_1 < s_2 < \dots < s_{n_s}$ réparties
+logarithmiquement entre $s_{\min} = 4$ et $s_{\max} = \lfloor n/4 \rfloor$ :
+\begin{equation}
+  s_j = \left\lfloor \exp\!\left(
+    \log s_{\min} + \frac{j-1}{n_s - 1}(\log s_{\max} - \log s_{\min})
+  \right) \right\rfloor, \qquad j = 1, \dots, n_s.
+  \label{eq:echelles-dfa}
+\end{equation}
+Les doublons introduits par $\lfloor \cdot \rfloor$ sont supprimés. La fonction
+\code{echelles_dfa} de \dC{dfa.py} implémente \eqref{eq:echelles-dfa}.
+
+\paragraph{Justification des bornes.} $s_{\min} = 4$ est le minimum pour un
+détrendage linéaire (deux paramètres à estimer sur au moins deux points par
+paramètre, plus une marge)~\cite{peng1994}. $s_{\max} = n/4$ garantit au moins
+$4$ fenêtres disjointes à la plus grande échelle, ce qui réduit la variance de
+$F(s_{\max})$.
+
+\subsubsection{Fluctuations}
+
+Pour chaque échelle $s_j$, le profil $Y$ est découpé en
+$M_j = \lfloor n/s_j \rfloor$ fenêtres disjointes de taille $s_j$ :
+\[
+  \left[Y((\nu-1)s_j + 1), \dots, Y(\nu s_j)\right],
+  \qquad \nu = 1, \dots, M_j.
+\]
+Dans chaque fenêtre, on ajuste par moindres carrés un polynôme d'ordre 1
+(\code{DFA_ORDRE = 1}) :
+\[
+  Y((\nu-1)s_j + k) \approx a_\nu\, k + b_\nu,
+  \qquad k = 1, \dots, s_j.
+\]
+La \emph{variance locale} des résidus est :
+\[
+  F^2(s_j, \nu) = \frac{1}{s_j}\sum_{k=1}^{s_j}
+  \bigl[Y((\nu-1)s_j + k) - (a_\nu k + b_\nu)\bigr]^2.
+\]
+La \emph{fluctuation} à l'échelle $s_j$ est la moyenne quadratique sur les
+fenêtres :
+\begin{equation}
+  F(s_j) = \sqrt{\frac{1}{M_j} \sum_{\nu=1}^{M_j} F^2(s_j, \nu)}.
+  \label{eq:F-s}
+\end{equation}
+
+\subsubsection{Régression log-log}
+
+Si $F(s) \sim s^{\alpha}$, on estime $\alpha$ par régression linéaire des
+$\log F(s_j)$ sur les $\log s_j$ :
+\begin{equation}
+  \log F(s_j) = \alpha \log s_j + c + \varepsilon_j.
+  \label{eq:regression-dfa}
+\end{equation}
+L'estimateur des moindres carrés est :
+\[
+  \hat \alpha = \frac{n_s \sum_j u_j v_j - \sum_j u_j \sum_j v_j}
+                     {n_s \sum_j u_j^2 - (\sum_j u_j)^2},
+  \qquad u_j = \log s_j, \quad v_j = \log F(s_j).
+\]
+
+\paragraph{Interprétation.} Pour un \emph{bruit gaussien fractionnaire} (fGn,
+stationnaire), $\alpha = H$. Pour un \emph{mouvement brownien fractionnaire}
+(fBm, non stationnaire), $\alpha = H + 1$~\cite{peng1994}. Une valeur
+$\hat\alpha > 1$ sur une série qu'on suppose stationnaire signale donc une
+non-stationnarité (régime, tendance) : c'est le drapeau \code{dfa_sup_1}.
+
+\subsubsection{Diagnostics complémentaires}
+
+La fonction \code{dfa_complet} calcule également :
+\begin{itemize}[leftmargin=1.4em]
+  \item les pentes $\hat\alpha_{\mathrm{bas}}$ et $\hat\alpha_{\mathrm{haut}}$
+  sur les moitiés basse et haute des échelles ;
+  \item l'écart $\Delta = \hat\alpha_{\mathrm{haut}} - \hat\alpha_{\mathrm{bas}}$
+  (\code{ecart_pentes}) ;
+  \item les pentes locales sur fenêtres glissantes de 5 échelles
+  (\code{pentes_locales}).
+\end{itemize}
+L'écart $\Delta$ est un diagnostic de \emph{crossover} : $\Delta \approx 0$ indique
+une loi d'échelle unique (une seule pente sur toute la plage), $|\Delta|$ grand
+indique deux régimes d'échelle distincts (par exemple, un régime à petite échelle
+et un autre à grande échelle). Cette décomposition répond directement à l'objection
+de Maraun, Rust et Timmer~\cite{maraun2004} : une pente globale ajustée sur toute
+la courbe ne prouve pas une loi d'échelle.
+
+\subsection{R/S : Rescaled Range}
+
+\subsubsection{Statistique sur un bloc}
+
+Pour un bloc de taille $m$ extrait de la série, soit $\bar x_m$ sa moyenne :
+\[
+  \bar x_m = \frac{1}{m}\sum_{i=1}^{m} x_i.
+\]
+L'écart cumulé au sein du bloc est :
+\[
+  W(k) = \sum_{i=1}^{k}(x_i - \bar x_m), \qquad k = 1, \dots, m.
+\]
+L'\emph{amplitude} et l'\emph{écart-type} sont :
+\[
+  R(m) = \max_{1 \leq k \leq m} W(k) - \min_{1 \leq k \leq m} W(k),
+  \qquad
+  S(m) = \sqrt{\frac{1}{m}\sum_{i=1}^{m}(x_i - \bar x_m)^2}.
+\]
+La statistique $R/S$ du bloc est $R(m)/S(m)$. La fonction \code{rs_bloc} de
+\dC{rs.py} implémente cette définition.
+
+\paragraph{Convention.} Le diviseur de l'écart-type est $m$ (variance biaisée),
+conformément à Hurst~\cite{hurst1951} et à Mandelbrot et Wallis~\cite{mandelbrot1969}.
+Certaines variantes utilisent $m-1$ ; le choix doit être cohérent avec la formule
+d'Anis-Lloyd.
+
+\subsubsection{Estimation de H}
+
+La fonction \code{rs_complet} calcule $R/S$ pour $n_m = 20$ tailles de bloc
+$m_1 < \dots < m_{n_m}$, réparties logarithmiquement entre $m_{\min} = 10$ et
+$m_{\max} = \lfloor n/2 \rfloor$. Pour chaque $m_j$, on moyenne $R/S$ sur tous les
+blocs disjoints de taille $m_j$ du segment, en ignorant les blocs d'écart-type nul :
+\[
+  \overline{R/S}(m_j) = \frac{1}{|\mathcal{B}_j^{>0}|}
+    \sum_{B \in \mathcal{B}_j^{>0}} \frac{R(m_j, B)}{S(m_j, B)},
+\]
+où $\mathcal{B}_j^{>0}$ est l'ensemble des blocs de taille $m_j$ d'écart-type non
+nul.
+
+Si $\E[R/S] \sim c\,m^H$, on estime $H$ par régression linéaire des
+$\log \overline{R/S}(m_j)$ sur $\log m_j$ :
+\[
+  \log \overline{R/S}(m_j) = H \log m_j + c' + \varepsilon_j.
+\]
+C'est l'estimation \emph{brute} (\code{h_rs_brut}).
+
+\subsubsection{Correction Anis-Lloyd}
+
+Le $R/S$ brut est biaisé pour les petits échantillons~\cite{anis1976}. Pour un
+bruit blanc gaussien i.i.d.\ de taille $m$, l'espérance exacte de $R/S$ est :
+\begin{equation}
+  \E_{\mathrm{iid}}\!\left[\frac{R}{S}\right](m) =
+  \frac{\Gamma\bigl((m-1)/2\bigr)}{\sqrt{\pi}\,\Gamma(m/2)}
+  \sum_{i=1}^{m-1} \sqrt{\frac{m-i}{i}}.
+  \label{eq:anis-lloyd}
+\end{equation}
+La fonction \code{esperance_rs} de \dC{rs.py} implémente \eqref{eq:anis-lloyd}
+exactement pour $m \leq 340$, et utilise l'approximation asymptotique
+$\Gamma((m-1)/2)/\Gamma(m/2) \approx \sqrt{2/m}$ au-delà.
+
+La correction Anis-Lloyd estime $H$ par :
+\begin{equation}
+  \hat H_{\mathrm{corrigé}} = \frac{1}{2} + \text{pente}\left[
+    \log \overline{R/S}(m_j) - \log \E_{\mathrm{iid}}\!\left[\frac{R}{S}\right](m_j)
+  \right] \text{ sur } \log m_j.
+  \label{eq:rs-corrige}
+\end{equation}
+C'est l'estimation corrigée (\code{h_rs_corrige}).
+
+\paragraph{Limite mesurée.} La correction d'Anis-Lloyd est conçue pour retirer le
+biais à $H = 1/2$. Sur des séries \emph{très persistantes} ($H \geq 0.7$), elle
+\emph{sur-corrige} : le biais observé est de $-0.149$ à $H_0 = 0.9$, $N = 300$ (voir
+tableau~\ref{tab:exactitude} du mémoire). C'est pourquoi le R/S corrigé n'est pas
+utilisé comme référence indépendante pour valider un $H$ élevé.
+
+\subsection{Whittle local}
+\label{sec:whittle}
+
+\subsubsection{Périodogramme}
+
+Soit $x_1, \dots, x_n$ la série. Le \emph{périodogramme} est :
+\begin{equation}
+  I_n(\lambda_j) = \frac{1}{2\pi n} \left| \sum_{k=1}^{n} x_k e^{i k \lambda_j} \right|^2,
+  \qquad \lambda_j = \frac{2\pi j}{n}, \quad j = 1, \dots, \lfloor n/2 \rfloor.
+  \label{eq:periodogramme}
+\end{equation}
+La fonction \code{periodogramme_rapide} de \dC{whittle.py} implémente
+\eqref{eq:periodogramme} via la FFT de numpy (\code{np.fft.rfft}).
+
+\subsubsection{Critère de Whittle local}
+
+L'estimateur de Whittle \emph{local} de Robinson~\cite{robinson1995} n'utilise que
+les basses fréquences, là où le spectre d'un processus à longue portée se comporte
+comme $f(\lambda) \sim c\,|\lambda|^{1-2H}$. On retient les $m$ premières
+fréquences, avec :
+\begin{equation}
+  m = \min\left(\bigl\lfloor n^{0{,}65} \bigr\rfloor,\; \bigl\lfloor n/4 \bigr\rfloor \right).
+  \label{eq:m-whittle}
+\end{equation}
+Le critère de Whittle à minimiser sur $H$ est :
+\begin{equation}
+  R(H) = \log\!\left(\frac{1}{m}\sum_{j=1}^{m} \lambda_j^{2H-1} I_n(\lambda_j)\right)
+         - (2H-1)\,\frac{1}{m}\sum_{j=1}^{m} \log \lambda_j.
+  \label{eq:whittle}
+\end{equation}
+
+\paragraph{Justification.} La relation $f(\lambda) \sim c\,|\lambda|^{1-2H}$ aux
+basses fréquences est la définition spectrale de la dépendance à longue
+portée~\cite{robinson1995}. Le critère \eqref{eq:whittle} est une version réduite
+du critère de Whittle : la constante $c$ a été éliminée analytiquement en
+concentrant la vraisemblance sur $H$.
+
+\subsubsection{Minimisation}
+
+On minimise $R(H)$ sur une grille régulière de $K = 1000$ points :
+\[
+  H_k = \frac{k}{K+1}, \qquad k = 1, \dots, K.
+\]
+L'estimation est $\hat H = H_{k^*}$ où $k^* = \arg\min_k R(H_k)$.
+
+\paragraph{Indicateur de saturation.} Quand le minimum est atteint à une borne de
+la grille ($k^* = 1$ ou $k^* = K$), cela signifie que la vraie solution serait
+$H \leq 0$ ou $H \geq 1$ : la valeur n'est pas une estimation fiable. Le drapeau
+\code{whittle_a_la_borne = True} est alors levé, et le segment est exclu du
+filtre de garde.
+
+\paragraph{Limite.} Le Whittle local n'est asymptotiquement normal que pour
+$H < 7/8$~\cite{phillips2004}. Il est \emph{inconsistant} pour $H \geq 1$. Ce n'est
+pas le Whittle exact de Shimotsu et Phillips~\cite{shimotsu2005}, qui n'est pas
+implémenté.
+
+\subsection{Test nul à mémoire courte}
+\label{sec:test-nul}
+
+Pour chaque segment, on teste si la pente DFA observée $\hat h_{\mathrm{obs}}$ peut
+être expliquée par un modèle à mémoire courte de même longueur et de même
+distribution. La fonction \code{evaluer_depassement_dfa} de
+\dC{validation/modeles_nuls.py} implémente le test.
+
+\subsubsection{Gaussianisation}
+
+La série $x$ est transformée en scores normaux par ses rangs :
+\begin{equation}
+  z_i = \Phi^{-1}\!\left(\frac{\mathrm{rang}(x_i) - 0{,}5}{n}\right),
+  \label{eq:gaussianisation}
+\end{equation}
+où $\Phi^{-1}$ est la fonction quantile de la loi normale standard, et le rang
+$\mathrm{rang}(x_i) \in \{1, \dots, n\}$ est déterminé par ordre croissant. Cette
+transformation donne une série approximativement gaussienne dont les corrélations
+de rang sont préservées.
+
+\subsubsection{Ajustement AR(p)}
+
+On ajuste un modèle autorégressif d'ordre $p$ aux données gaussianisées $z$ :
+\begin{equation}
+  z_t = \phi_1 z_{t-1} + \phi_2 z_{t-2} + \dots + \phi_p z_{t-p} + \varepsilon_t,
+  \qquad \varepsilon_t \sim \mathcal{N}(0, \sigma^2).
+  \label{eq:ar}
+\end{equation}
+Les paramètres $(\phi, \sigma^2)$ sont estimés par les équations de Yule-Walker :
+\begin{equation}
+  \Gamma_p \phi = \gamma_{1:p}, \qquad \sigma^2 = \gamma_0 - \phi^\top \gamma_{1:p},
+  \label{eq:yule-walker}
+\end{equation}
+où $\Gamma_p$ est la matrice de Toeplitz des autocovariances $\gamma(0), \dots,
+\gamma(p-1)$ et $\gamma_{1:p} = (\gamma(1), \dots, \gamma(p))^\top$. La fonction
+\code{ajuster_ar} utilise \code{scipy.linalg.solve_toeplitz} pour résoudre
+\eqref{eq:yule-walker}.
+
+L'ordre $p$ est choisi par minimisation du critère d'information d'Akaike :
+\[
+  \mathrm{AIC}(p) = n \log \sigma_p^2 + 2p, \qquad p \in \{0, 1, \dots, \code{NUL_ORDRE_AR_MAX}\}.
+\]
+
+\subsubsection{Simulation et échange de rangs}
+
+On simule $B = 99$ séries AR($p$) indépendantes de même longueur $n$, avec les
+paramètres $(\phi, \sigma^2)$ estimés. Chaque série simulée est ensuite transformée
+pour lui redonner exactement la distribution empirique de $x$, par échange de
+rangs :
+\[
+  s^{(b)}_i = x_{(\mathrm{rang}(z^{(b)}_i))},
+\]
+où $x_{(1)} \leq x_{(2)} \leq \dots \leq x_{(n)}$ est la série triée de $x$, et le
+rang est celui de la simulation gaussienne.
+
+\paragraph{Justification.} Le test vise à isoler la mémoire longue \emph{au-delà}
+de ce qu'un AR($p$) peut expliquer. L'échange de rangs garantit que la marginale
+de $x$ (queues lourdes, asymétrie, valeurs positives) est préservée dans les
+surrogats : la seule différence entre $x$ et $s^{(b)}$ est la structure de
+dépendance temporelle.
+
+\subsubsection{Statistique et p-valeur}
+
+On calcule la pente DFA $\hat h^{(b)}$ sur chaque surrogate $s^{(b)}$. La p-valeur
+unilatérale (H$_0$ = mémoire courte) est :
+\begin{equation}
+  p = \frac{1 + \#\{b : \hat h^{(b)} \geq \hat h_{\mathrm{obs}}\}}{B + 1}.
+  \label{eq:p-valeur-nul}
+\end{equation}
+Le \emph{seuil} est le quantile à $95\%$ des pentes simulées :
+\[
+  \mathrm{seuil}_{95} = Q_{0{,}95}\bigl(\{\hat h^{(b)}\}\bigr).
+\]
+L'\emph{excès} est :
+\[
+  \mathrm{excès} = \hat h_{\mathrm{obs}} - \mathrm{seuil}_{95}.
+\]
+Un excès positif indique un dépassement significatif au seuil $\alpha = 0{,}05$.
+
+\begin{remarque}
+Ce test est \emph{unilatéral} : il ne détecte que la persistance
+($\hat h_{\mathrm{obs}} > \hat h^{(b)}$), pas l'anti-persistance. Ce n'est pas un
+test de mémoire longue : un dépassement indique qu'un AR($p$) ne suffit pas, mais
+une alternance de régimes le produit aussi~\cite{diebold2001}.
+\end{remarque}
+
+\subsection{Variante par morceaux}
+\label{sec:morceaux}
+
+La fonction \code{h_dfa_par_morceaux} de \dC{estimation_segment.py} calcule
+$\hat H_{\mathrm{DFA}}$ après avoir coupé le segment aux points
+\code{artefact} et \code{suspect_dist}, \emph{sans} raccorder les morceaux. Chaque
+morceau de $\geq 50$ points est analysé séparément, puis les $\hat H$ sont combinés
+par moyenne pondérée :
+\[
+  \hat H_{\mathrm{morceaux}} = \frac{\sum_{m \in \text{morceaux}} n_m \hat H_m}
+                                    {\sum_{m} n_m},
+\]
+où $n_m$ est le nombre de points du morceau $m$.
+
+\paragraph{Justification.} La V4 calculait un « H sans suspects » en \emph{retirant}
+les points suspects puis en recalculant les distances entre voisins restants.
+Cela fabriquait un saut artificiel entre les deux voisins de part et d'autre du
+point retiré, saut auquel la DFA est sensible~\cite{chen2002}. La variante par
+morceaux coupe sans raccorder.
+
+% =====================================================================
+\section{Étape 6b : filtre de fiabilité}
+\label{sec:filtre}
+% =====================================================================
+
+La fonction \code{traiter_utilisateur} de \dC{H_valides.py} lit les résultats
+\code{resultats_H/<user>_H.csv} produits par \dC{03_estimation_H.py} et
+applique le filtre d'inclusion.
+
+\subsection{Les quatre conditions}
+
+Un segment est \emph{gardé} si et seulement si les quatre conditions suivantes sont
+satisfaites :
+\begin{enumerate}[leftmargin=1.4em]
+  \item \textbf{Calculabilité.} Les trois méthodes ont produit une valeur :
+  $\hat H_{\mathrm{DFA}}$, $\hat H_{\mathrm{RS}}$, $\hat H_{\mathrm{Whittle}}$
+  ne sont ni \code{NaN} ni vides.
+  \item \textbf{Domaine.} Chacune est dans $]0, 1[$ :
+  \[
+    0 < \hat H_{\mathrm{DFA}} < 1, \quad
+    0 < \hat H_{\mathrm{RS}} < 1, \quad
+    0 < \hat H_{\mathrm{Whittle}} < 1.
+  \]
+  \item \textbf{Whittle non saturé.} \code{whittle_a_la_borne = False}
+  (section §\ref{sec:whittle}).
+  \item \textbf{Accord inter-méthodes.} La divergence
+  \[
+    \mathrm{div} = \max(\hat H_{\mathrm{DFA}}, \hat H_{\mathrm{RS}},
+                         \hat H_{\mathrm{Whittle}})
+                  - \min(\hat H_{\mathrm{DFA}}, \hat H_{\mathrm{RS}},
+                         \hat H_{\mathrm{Whittle}})
+  \]
+  vérifie $\mathrm{div} \leq 0{,}15$ (\code{SEUIL_DIVERGENCE}).
+\end{enumerate}
+
+\paragraph{Condition sur \code{whittle_a_la_borne}.} Le booléen doit être
+strictement \code{False}. Une valeur vide (\code{None}) signifie que Whittle n'a
+pas été calculé : le segment est exclu (pas de comparaison possible). Cette
+distinction est codée explicitement par la fonction \code{_parse_bool}.
+
+\subsection{Critique de la circularité}
+
+La condition (4) introduit une \emph{circularité} : la divergence est calculée à
+partir des $\hat H$ eux-mêmes, et le seuil $0{,}15$ conditionne l'inclusion du
+segment. La convergence observée sur les segments gardés n'est donc pas une
+confirmation indépendante de la qualité des estimateurs : elle est la
+\emph{conséquence} du critère d'inclusion.
+
+Sur l'échantillon de GeoLife, l'écart moyen
+$|\hat H_{\mathrm{DFA}} - \hat H_{\mathrm{RS}}|$ passe de $0{,}074$ (tous les
+segments) à $0{,}023$ (segments gardés) : cette réduction est attendue par
+construction.
+
+\subsection{Scénario \emph{forts}}
+
+Parmi les segments gardés, un sous-ensemble est qualifié de \emph{fort} si les
+trois méthodes donnent simultanément $\hat H > 0{,}5$ :
+\[
+  \hat H_{\mathrm{DFA}} > 0{,}5 \quad \text{et} \quad
+  \hat H_{\mathrm{RS}} > 0{,}5 \quad \text{et} \quad
+  \hat H_{\mathrm{Whittle}} > 0{,}5.
+\]
+La colonne \code{fort_0p5} dans \code{<user>_H_gardes.csv} encode ce booléen.
+
+\paragraph{Interprétation.} Sur le corpus GeoLife, la quasi-totalité des segments
+gardés est également forte ($n_{\mathrm{forts}} / n_{\mathrm{gardés}} \approx 0{,}97$).
+Cela signifie que le filtre de garde sélectionne majoritairement des segments
+persistants. Ce n'est pas une preuve de mémoire longue (le test nul n'est pas
+utilisé ici), mais c'est cohérent avec l'hypothèse d'une persistance locale.
+
+\subsection{Agrégation par utilisateur}
+
+Pour chaque utilisateur, la fonction \code{traiter_utilisateur} calcule deux
+moyennes sur les segments gardés (arithmétique et pondérée par $n_{\text{gardés}}$),
+pour les trois méthodes et les trois scénarios (tous, gardés, forts) :
+\[
+  \bar h_{\mathrm{user}} = \frac{1}{|\mathcal{G}|}\sum_{s \in \mathcal{G}} \hat h_s,
+  \qquad
+  \bar h^{\mathrm{pond}}_{\mathrm{user}} =
+  \frac{\sum_{s \in \mathcal{G}} n_s \hat h_s}{\sum_{s \in \mathcal{G}} n_s},
+\]
+où $\mathcal{G}$ est l'ensemble des segments gardés de l'utilisateur, et $n_s$ le
+nombre de points du segment $s$. Le script \dC{H_valides.py} présente la moyenne
+pondérée comme \emph{la} métrique de référence (les gros enregistreurs pèsent plus).
+
+% =====================================================================
+\section{Seconde branche : analyse des lois de puissance}
+\label{sec:lois-puissance}
+% =====================================================================
+
+\paragraph{Objet.} Les sections précédentes décrivent la branche qui mesure une
+propriété de \emph{dépendance temporelle} (l'exposant de Hurst) sur la série des
+distances inter-points $d_i$. La branche décrite ici mesure une propriété de
+\emph{distribution} sur les mêmes trajectoires : les durées d'arrêt et les
+distances entre arrêts suivent-elles une loi de puissance ? Les deux branches sont
+indépendantes dans leur traitement mais partagent la même détection d'arrêts.
+
+\subsection{Variables analysées}
+\label{sec:arrets-branche-lp}
+
+Les deux variables sont construites par le module \dC{pretraitement/arrets.py} à
+partir des CSV produits par \dC{01_pretraitement.py} :
+
+\begin{itemize}[leftmargin=1.4em]
+  \item \textbf{temps de séjour} $T$ : durée d'un arrêt, détecté par fenêtre
+  glissante de Li et al.\ (rayon $R_{\mathrm{arr}}$, durée minimale
+  $T_{\min}$) ;
+  \item \textbf{distance entre arrêts} $D$ : distance haversine entre les centroïdes
+  de deux arrêts consécutifs.
+\end{itemize}
+
+Le module distingue quatre variantes transmises au module d'analyse :
+\code{sejour} (arrêts internes non censurés, choix principal),
+\code{distance} (paires dans le même segment), \code{sejour_avec_censurees}
+(incluant les pauses entre segments) et \code{distance_a_cheval} (incluant les
+paires séparées par un trou d'enregistrement).
+
+\begin{remarque}[Censure]
+Suivant Kivelä et Porter~\cite{kivela2015}, les arrêts dont le début ou la fin
+tombent hors de la fenêtre d'observation sont \emph{étiquetés} (colonne
+\code{censuree}), pas supprimés. La variante \code{sejour} exclut les censurés
+(car les longs séjours sont sous-représentés, ce qui biaise la queue), et
+\code{sejour_avec_censurees} les inclut en sensibilité.
+\end{remarque}
+
+% ---------------------------------------------------------------------
+\subsection{Étape 1 : ajustement de Clauset (loi de puissance pure)}
+\label{sec:clauset}
+
+On suppose que la queue de la distribution (au-dessus d'un seuil $x_{\min}$)
+suit une loi de puissance continue :
+\begin{equation}
+  p(x) = \frac{\alpha - 1}{x_{\min}} \left(\frac{x}{x_{\min}}\right)^{-\alpha},
+  \qquad x \geq x_{\min}, \quad \alpha > 1.
+  \label{eq:loi-puissance}
+\end{equation}
+La fonction de survie est $P(X > x) = (x/x_{\min})^{1-\alpha}$.
+
+\subsubsection{Maximum de vraisemblance à $x_{\min}$ fixé}
+
+Pour un échantillon $x_1, \dots, x_n \geq x_{\min}$, la log-vraisemblance de
+\eqref{eq:loi-puissance} est :
+\[
+  \ell(\alpha) = n \log(\alpha - 1) - n \log x_{\min}
+                 - \alpha \sum_{i=1}^{n} \log(x_i / x_{\min}).
+\]
+L'annulation de la dérivée par rapport à $\alpha$ donne l'estimateur :
+\begin{equation}
+  \hat\alpha = 1 + n \left[\sum_{i=1}^{n} \log(x_i / x_{\min})\right]^{-1},
+  \qquad
+  \hat\sigma_\alpha = \frac{\hat\alpha - 1}{\sqrt{n}}.
+  \label{eq:mle-alpha}
+\end{equation}
+La fonction \code{exposant_vraisemblance_max} de \dC{lois_de_puissance/clauset.py}
+implémente \eqref{eq:mle-alpha}.
+
+\subsubsection{Choix de $x_{\min}$ par distance KS}
+
+Le seuil $x_{\min}$ est choisi en minimisant la distance de
+Kolmogorov-Smirnov entre la queue observée et la loi ajustée :
+\begin{equation}
+  \hat{x}_{\min} = \arg\min_{x_{\min}} \sup_{x \geq x_{\min}}
+  \left| \hat F_{\text{emp}}(x) - F(x \mid \hat\alpha(x_{\min}), x_{\min}) \right|,
+  \label{eq:choix-xmin}
+\end{equation}
+où $\hat F_{\text{emp}}$ est la fonction de répartition empirique de la queue, et
+$F$ la fonction de répartition théorique de \eqref{eq:loi-puissance}.
+
+\begin{remarque}[Grille de candidats]
+Le package \code{powerlaw} de Alstott et al.\ essaie \emph{toutes} les valeurs
+distinctes de l'échantillon. Le code implémenté limite à
+\code{LP_NB_CANDIDATS_XMIN} $= 200$ seuils équi-répartis, avec la contrainte
+que la queue fasse au moins \code{LP_NB_MIN_QUEUE} $= 50$ points. Ce compromis
+réduit le coût du bootstrap (qui re-teste $x_{\min}$ à chaque simulation) et
+change très peu la valeur retenue.
+\end{remarque}
+
+\subsubsection{Test d'adéquation par bootstrap semi-paramétrique}
+
+Un bon ajustement KS ne prouve pas que la loi est correcte : il faut tester
+l'adéquation. La méthode de Clauset, Shalizi et Newman~\cite{clauset2009} simule
+$B$ échantillons qui suivent la loi ajustée et refait tout l'ajustement (y compris
+le choix de $x_{\min}$), puis compare la distribution des distances KS simulées à
+celle observée :
+\begin{equation}
+  p_{\text{boot}} = \frac{1}{B} \sum_{b=1}^{B}
+  \mathbb{1}\bigl[\mathrm{KS}_b \geq \mathrm{KS}_{\text{obs}}\bigr].
+  \label{eq:p-boot-clauset}
+\end{equation}
+La règle est : $p_{\text{boot}} \leq 0{,}1$ $\Rightarrow$ loi de puissance
+rejetée ; $p_{\text{boot}} > 0{,}1$ $\Rightarrow$ non rejetée (plausible, pas
+prouvée). La fonction \code{p_valeur_adequation} de \dC{clauset.py} implémente
+\eqref{eq:p-boot-clauset} avec $B = 1000$.
+
+% ---------------------------------------------------------------------
+\subsection{Étape 2 : quatre lois alternatives}
+\label{sec:alternatives}
+
+La loi de puissance pure est mise en concurrence avec quatre alternatives, toutes
+ajustées sur la \emph{même} queue ($x \geq x_{\min}$) et renormalisées pour ne
+décrire que cette queue. Le module \dC{lois_de_puissance/alternatives.py}
+implémente chacune.
+
+\subsubsection{Exponentielle décalée (1 paramètre)}
+
+\[
+  p(x) = \lambda \exp\bigl(-\lambda(x - x_{\min})\bigr), \qquad x \geq x_{\min}.
+\]
+L'estimateur du maximum de vraisemblance est explicite :
+$\hat\lambda = 1/\overline{(x - x_{\min})}$.
+
+\subsubsection{Log-normale conditionnée (2 paramètres)}
+
+\[
+  p(x \mid x \geq x_{\min}) = \frac{f(x)}{P(X \geq x_{\min})},
+\]
+où $f$ est la densité log-normale de paramètres $(\mu, \sigma)$ :
+\[
+  f(x) = \frac{1}{x \sigma \sqrt{2\pi}} \exp\left(-\frac{(\log x - \mu)^2}{2\sigma^2}\right).
+\]
+Le dénominateur est calculé par la fonction de survie de la loi normale
+$\Phi((\log x_{\min} - \mu)/\sigma)$, en logarithme pour rester précis loin dans
+la queue (\code{stats.norm.logsf} de scipy). L'ajustement se fait numériquement
+par Nelder-Mead sur $(\mu, \ln\sigma)$.
+
+\subsubsection{Weibull conditionnée (2 paramètres)}
+
+\[
+  p(x \mid x \geq x_{\min}) = f(x) \cdot \exp\bigl((x_{\min}/\lambda)^k\bigr),
+\]
+où $f$ est la densité Weibull de forme $k$ et d'échelle $\lambda$ :
+\[
+  f(x) = \frac{k}{\lambda} \left(\frac{x}{\lambda}\right)^{k-1}
+         \exp\left(-\left(\frac{x}{\lambda}\right)^k\right).
+\]
+L'ajustement se fait par Nelder-Mead sur $(\ln k, \ln\lambda)$. La forme $k = 1$
+redonne l'exponentielle ; $k < 1$ donne une queue plus lourde.
+
+\subsubsection{Loi de puissance tronquée (2 paramètres)}
+\label{sec:tronquee}
+
+C'est l'alternative principale : elle contient la loi de puissance pure comme cas
+limite et permet de tester formellement si la queue est \emph{coupée} au-delà
+d'une certaine échelle :
+\begin{equation}
+  p(x) = \frac{1}{Z}\, x^{-\alpha} \exp(-\lambda x), \qquad x \geq x_{\min},
+  \label{eq:tronquee}
+\end{equation}
+avec $Z = \int_{x_{\min}}^{\infty} t^{-\alpha} \exp(-\lambda t)\, dt$.
+
+\paragraph{Calcul de $Z$ par changement de variable.} Le calcul direct de $Z$ est
+numériquement instable quand $\lambda \to 0$ (l'intégrale devient proche de celle
+de la loi de puissance pure, dominée par $t^{-\alpha}$). On effectue deux
+changements de variables :
+\begin{enumerate}[leftmargin=1.4em]
+  \item $x = x_{\min} + s/\lambda$, d'où $x^{-\alpha} = x_{\min}^{-\alpha}
+  (1 + s/(\lambda x_{\min}))^{-\alpha}$ et
+  $\exp(-\lambda x) = e^{-\kappa} \exp(-s)$ avec $\kappa = \lambda x_{\min}$ ;
+  \item $s = \kappa e^w$, d'où $ds = \kappa e^w\, dw$.
+\end{enumerate}
+On obtient :
+\begin{equation}
+  Z = \frac{x_{\min}^{-\alpha} e^{-\kappa}}{\lambda}
+      \int_{-\infty}^{+\infty}
+      \exp\Bigl(-\alpha \log(1 + e^w) - \kappa e^w + \log\kappa + w\Bigr)\, dw.
+  \label{eq:Z-tronquee}
+\end{equation}
+L'intégrande en $w$ est une bosse lisse de largeur d'ordre 1, quelle que soit la
+valeur de $\lambda$ : c'est ce qui rend l'intégration numérique stable même quand
+$\lambda$ est très petit. La fonction
+\code{_log_normalisation_puissance_tronquee} de \dC{alternatives.py}
+implémente \eqref{eq:Z-tronquee}.
+
+\paragraph{Ajustement.} Le maximum de vraisemblance de $(\alpha, \lambda)$ se
+calcule par Nelder-Mead en partant de $\alpha_0$ (exposant de la loi pure) et
+d'une coupure faible $\lambda_0 = 1/(10 \max x_i)$. L'optimisation ne peut donc
+qu'améliorer le modèle emboîté : si la coupure n'apporte rien, $\lambda$ tend
+vers $0$ et le résultat rejoint la loi de puissance pure.
+
+% ---------------------------------------------------------------------
+\subsection{Étape 3 : comparaison des vraisemblances}
+\label{sec:comparaison}
+
+Les cinq modèles sont comparés par le \emph{rapport de log-vraisemblance} :
+\begin{equation}
+  R = \sum_{i=1}^{n} \bigl[\log p_{\text{PL}}(x_i) - \log p_{\text{alt}}(x_i)\bigr].
+  \label{eq:rapport-vraisemblance}
+\end{equation}
+$R > 0$ favorise la loi de puissance, $R < 0$ favorise l'alternative. La
+significativité de $R$ dépend du type de modèle :
+
+\subsubsection{Test de Vuong (alternatives non emboîtées)}
+
+Pour les trois alternatives non emboîtées (exponentielle, log-normale, Weibull),
+on utilise le test de Vuong~\cite{vuong1989} :
+\begin{equation}
+  p_{\text{Vuong}} = \mathrm{erfc}\!\left(
+    \frac{|R|}{\sqrt{2n}\,\sigma_{\Delta}}
+  \right),
+  \qquad
+  \sigma_{\Delta} = \mathrm{std}\bigl(\log p_{\text{PL}}(x_i) - \log p_{\text{alt}}(x_i)\bigr).
+  \label{eq:vuong}
+\end{equation}
+Si $p_{\text{Vuong}} \leq 0{,}1$, la différence de vraisemblance est significative ;
+sinon la comparaison est indécidable.
+
+\subsubsection{Test du $\chi^2$ (alternative emboîtée : tronquée)}
+
+La loi tronquée contient la loi de puissance pure comme cas limite
+($\lambda = 0$). Le test approprié est alors un test du $\chi^2$ à un degré de
+liberté sur $2|R|$ :
+\begin{equation}
+  p_{\text{emboîté}} = \chi^2_1\bigl(2|R|\bigr).
+  \label{eq:chi2}
+\end{equation}
+
+\begin{remarque}[Paramètre au bord]
+$\lambda = 0$ est \emph{au bord} de l'espace des paramètres ($\lambda \geq 0$),
+ce qui rend \eqref{eq:chi2} un peu conservateur (Self \& Liang, 1987). Une
+correction exacte multiplierait la p-valeur par $0{,}5$. On retient la version
+conservatrice, cohérente avec la littérature Clauset.
+\end{remarque}
+
+\subsubsection{Critère d'Akaike corrigé (AICc)}
+
+En complément des rapports de vraisemblance, on calcule les \emph{poids d'Akaike}
+corrigés pour petits échantillons, qui pénalisent le nombre de paramètres et
+somment à 1 sur les cinq modèles :
+\begin{equation}
+  \mathrm{AICc}_m = 2k_m - 2\ln L_m + \frac{2k_m(k_m + 1)}{n - k_m - 1},
+  \label{eq:aicc}
+\end{equation}
+où $k_m$ est le nombre de paramètres du modèle $m$ et $n$ la taille de la queue.
+Le poids est ensuite :
+\[
+  w_m = \frac{\exp(-\Delta_m/2)}{\sum_{m'} \exp(-\Delta_{m'}/2)},
+  \qquad \Delta_m = \mathrm{AICc}_m - \min_{m'} \mathrm{AICc}_{m'}.
+\]
+La fonction \code{poids_aicc} de \dC{alternatives.py} implémente \eqref{eq:aicc}.
+
+% ---------------------------------------------------------------------
+\subsection{Étape 4 : adéquation de la loi tronquée}
+\label{sec:adequation-tronquee}
+
+Le critère AICc dit quel modèle est le meilleur ; il ne dit pas si ce modèle est
+un \emph{bon} ajustement. La même distinction qu'à l'étape 1 (test KS) s'applique
+donc à la loi tronquée gagnante.
+
+L'étape 4 est un test bootstrap analogue à \eqref{eq:p-boot-clauset}, mais
+spécifique à la tronquée :
+\begin{enumerate}[leftmargin=1.4em]
+  \item calculer la distance KS entre les données et la tronquée ajustée
+  (avec $x_{\min}$ fixé à sa valeur observée) ;
+  \item simuler $B$ échantillons de la tronquée (méthode par rejet :
+  tirer selon la loi de puissance pure et accepter avec probabilité
+  $\exp(-\lambda(x - x_{\min}))$) ;
+  \item réajuster chaque simulation (avec $x_{\min}$ toujours fixé) et
+  calculer sa distance KS ;
+  \item $p = \#\{\mathrm{KS}_b \geq \mathrm{KS}_{\text{obs}}\} / B$.
+\end{enumerate}
+La fonction \code{p_valeur_adequation_tronquee} de \dC{alternatives.py}
+implémente ce test avec $B = 200$.
+
+\begin{remarque}[Puissance limitée]
+Le test est \emph{beaucoup moins puissant} que celui de Clauset, pour deux
+raisons : $x_{\min}$ est fixé (pas de sensibilité au mauvais choix de seuil), et
+seuls $(\alpha, \lambda)$ sont réajustés sur chaque simulation. Un
+$p > 0{,}1$ ne prouve donc pas que la tronquée est adéquate ; il indique
+seulement que les données ne s'en écartent pas de manière détectable à cette
+résolution. Un $p \leq 0{,}1$ est en revanche un rejet robuste (le test est
+permissif, donc s'il rejette, c'est que le désaccord est net).
+\end{remarque}
+
+% ---------------------------------------------------------------------
+\subsection{Étape 5 : lien avec l'exposant de Hurst (processus ON/OFF)}
+\label{sec:onoff-annexe}
+
+Si l'activité alterne entre phases ON (mouvement) et OFF (arrêt) dont les durées
+ont une queue de survie en $t^{-a}$ avec $1 < a < 2$, on attend une dépendance
+de longue portée avec~\cite{taqqu1997} :
+\begin{equation}
+  H = \frac{3 - a}{2} = \frac{4 - \alpha}{2},
+  \qquad 2 < \alpha < 3.
+  \label{eq:onoff-annexe}
+\end{equation}
+La condition $2 < \alpha < 3$ vient de $a = \alpha - 1$ et $1 < a < 2$ (exposant
+de survie). L'exposant $\alpha$ de la densité est celui ajusté à l'étape 1.
+
+Le code calcule automatiquement :
+\begin{itemize}[leftmargin=1.4em]
+  \item \code{dans_domaine_on_off} : booléen $2 < \alpha < 3$ ;
+  \item \code{h_on_off_predit} : $(4 - \alpha)/2$ si dans le domaine,
+  \code{NaN} sinon.
+\end{itemize}
+Ces deux colonnes servent à vérifier \emph{avant} toute comparaison à $H$ que la
+relation est applicable : si $\alpha$ est hors domaine, la prédiction ne
+s'applique pas et doit être rapportée telle quelle.
+
+\begin{remarque}
+Le résultat de Taqqu, Willinger et Sherman~\cite{taqqu1997} porte sur la
+\emph{superposition} d'un grand nombre de sources ON/OFF ; pour la trajectoire
+d'un seul individu, l'argument relève de la théorie du renouvellement. La
+relation \eqref{eq:onoff-annexe} est donc une hypothèse de travail, pas un
+théorème.
+\end{remarque}
+
+% ---------------------------------------------------------------------
+\subsection{Tableau récapitulatif des constantes LP}
+\label{sec:constantes-lp}
+
+\begin{table}[h]
+\centering
+\caption{Constantes de la branche lois de puissance (\code{config.py}, V5)}
+\label{tab:constantes-lp}
+\small
+\begin{tabular}{@{}p{5cm}p{1.8cm}p{7cm}@{}}
+\toprule
+Constante & Valeur & Rôle \\
+\midrule
+\code{LP_SEUIL_P} & 0{,}1 & seuil de rejet (Clauset et al., §5) \\
+\code{LP_NB_BOOTSTRAP} & 1000 & simulations bootstrap pour $p_{\text{boot}}$ \\
+\code{LP_NB_MIN_QUEUE} & 50 & taille minimale de la queue \\
+\code{LP_NB_CANDIDATS_XMIN} & 200 & seuils $x_{\min}$ essayés \\
+\code{LP_NB_MIN_PAR_UTILISATEUR} & 100 & observations min par user \\
+\code{ARRET_RAYON_M} & 200 & rayon d'arrêt (m) \\
+\code{ARRET_DUREE_MIN_S} & 1200 & durée minimale d'arrêt (s) \\
+\code{ARRET_TROU_MAX_S} & 900 & trou qui coupe la série (s) \\
+\code{ARRET_RAYON_PAUSE_M} & 200 & rayon d'une pause entre segments (m) \\
+\code{ARRET_DISTANCE_MIN_M} & 100 & distance minimale entre deux arrêts (m) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\subsection{Chiffres de référence sur GeoLife}
+\label{sec:resultats-lp-annexe}
+
+L'analyse a été exécutée sur les 137 utilisateurs de GeoLife ayant au moins un
+arrêt détecté (jeu de seuils 200~m~/~20~min), pour les quatre variables. Les
+quatre résultats agrégés (population regroupée) sont reportés au chapitre 9 du
+mémoire. On retiendra :
+\begin{itemize}[leftmargin=1.4em]
+  \item la loi de puissance pure est rejetée pour 3 variables sur 4
+  (\code{distance}, \code{sejour_avec_censurees}, \code{distance_a_cheval}) ;
+  \item la loi de puissance tronquée obtient le meilleur poids AICc pour
+  \code{sejour} (0{,}97) et \code{distance_a_cheval} (0{,}51) ;
+  \item la loi tronquée est elle-même rejetée par le bootstrap pour \code{sejour}
+  ($p_{\text{tronq}} = 0{,}000$) : aucun des cinq modèles n'est adéquat pour cette
+  variable ;
+  \item $\alpha_{\text{séjour}} \approx 3{,}19$ est hors du domaine
+  $]2, 3[$ de la relation ON/OFF, donc $H_{\text{pred}}$ n'est pas calculable
+  pour la variable principale.
+\end{itemize}
+
+% =====================================================================
+\section{Tableau récapitulatif des constantes}
+% =====================================================================
+
+\begin{table}[h]
+\centering
+\caption{Constantes du pipeline Hurst (\code{config.py}, V5)}
+\label{tab:constantes}
+\small
+\begin{tabular}{@{}p{5cm}p{2cm}p{7cm}@{}}
+\toprule
+Constante & Valeur & Rôle \\
+\midrule
+\code{TIME_GAP_THRESHOLD} & 900~s & coupure de segment \\
+\code{MIN_POINTS} & 300 & minimum de points par segment \\
+\code{DISTANCE_MIN} & 0{,}1~km & seuil de distance (plancher) \\
+\code{DISTANCE_MIN_RELATIF} & True & active le seuil relatif \\
+\code{DISTANCE_MIN_V_PLANCHER_KMH} & 1~km/h & vitesse de marche lente \\
+\code{MAX_DIST_M} & 30 & multiplicateur de $\tilde d$ \\
+\code{MAX_DIST_M_ABSOLU} & 500~m & plafond absolu \\
+\code{MAX_SPEED} & 200~km/h & plafond absolu de vitesse \\
+\code{MAX_SPEED_RELATIF} & 20 & multiplicateur de $\tilde v$ \\
+\code{MAD_Z_SEUIL} & 3{,}5 & seuil du Z-score modifié \\
+\code{MAD_PERSISTANCE_MIN} & 5 & plancher de persistance \\
+\code{MAD_PERSISTANCE_FRACTION} & 0{,}01 & fraction de $N$ \\
+\code{MAD_DELTA_V_BRUTAL} & 20~km/h & plancher de variation brutale \\
+\code{MAD_DELTA_V_FACTEUR_MAD} & 5 & multiplicateur de $\mathrm{MAD}_v$ \\
+\code{MAD_FALLBACK_SPEED} & 5~km/h & plancher si MAD=0 \\
+\code{MAD_FALLBACK_SPEED_FACTEUR} & 3 & multiplicateur si MAD=0 \\
+\code{N_S} & 20 & nombre d'échelles DFA \\
+\code{DFA_ECHELLE_MIN} & 4 & plus petite échelle \\
+\code{DFA_DIVISEUR_ECHELLE_MAX} & 4 & $s_{\max} = N/4$ \\
+\code{DFA_ORDRE} & 1 & ordre du détrentage \\
+\code{N_M} & 20 & nombre de tailles de bloc R/S \\
+\code{M_MIN_RS} & 10 & plus petite taille de bloc \\
+\code{RS_DIVISEUR_M_MAX} & 2 & $m_{\max} = N/2$ \\
+\code{K_WHITTLE} & 1000 & taille de la grille \\
+\code{WHITTLE_EXPOSANT_M} & 0{,}65 & $m = N^{0{,}65}$ \\
+\code{WHITTLE_DIVISEUR_M_MAX} & 4 & $m \leq N/4$ \\
+\code{NUL_NB_SURROGATS} & 99 & surrogats par segment \\
+\code{NUL_ORDRE_AR_MAX} & 5 & ordre maximal de l'AR \\
+\code{NUL_ALPHA} & 0{,}05 & seuil du test nul \\
+\code{SEUIL_DIVERGENCE} & 0{,}15 & seuil d'accord inter-méthodes \\
+\code{SEUIL_FORT} & 0{,}5 & seuil du scénario forts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% =====================================================================
+\begin{thebibliography}{99}
+% =====================================================================
+
+\bibitem{peng1994} C.-K. Peng, S.~V. Buldyrev, S. Havlin, M. Simons, H.~E. Stanley,
+A.~L. Goldberger. Mosaic organization of DNA nucleotides. \textit{Physical Review E},
+49(2):1685--1689, 1994.
+
+\bibitem{hurst1951} H.~E. Hurst. Long-term storage capacity of reservoirs.
+\textit{Transactions of the American Society of Civil Engineers}, 116:770--799, 1951.
+
+\bibitem{mandelbrot1968} B.~B. Mandelbrot, J.~W. Van Ness. Fractional Brownian
+motions, fractional noises and applications. \textit{SIAM Review}, 10(4):422--437,
+1968.
+
+\bibitem{mandelbrot1969} B.~B. Mandelbrot, J.~R. Wallis. Robustness of the rescaled
+range $R/S$ in the measurement of noncyclic long run statistical dependence.
+\textit{Water Resources Research}, 5(5):967--988, 1969.
+
+\bibitem{anis1976} A.~A. Anis, E.~H. Lloyd. The expected value of the adjusted
+rescaled Hurst range of independent normal summands. \textit{Biometrika},
+63(1):111--116, 1976.
+
+\bibitem{robinson1995} P.~M. Robinson. Gaussian semiparametric estimation of long
+range dependence. \textit{The Annals of Statistics}, 23(5):1630--1661, 1995.
+
+\bibitem{phillips2004} P.~C.~B. Phillips, K. Shimotsu. Local Whittle estimation in
+nonstationary and unit root cases. \textit{The Annals of Statistics}, 32(2), 2004.
+
+\bibitem{shimotsu2005} K. Shimotsu, P.~C.~B. Phillips. Exact local Whittle
+estimation of fractional integration. \textit{The Annals of Statistics}, 33(4), 2005.
+
+\bibitem{chen2002} Z. Chen, P.~Ch. Ivanov, K. Hu, H.~E. Stanley. Effect of
+nonstationarities on detrended fluctuation analysis. \textit{Physical Review E},
+65:041107, 2002.
+
+\bibitem{maraun2004} D. Maraun, H.~W. Rust, J. Timmer. Tempting long-memory --- on
+the interpretation of DFA results. \textit{Nonlinear Processes in Geophysics},
+11(4):495--503, 2004.
+
+\bibitem{iglewicz1993} B. Iglewicz, D.~C. Hoaglin. \textit{How to Detect and Handle
+Outliers}. ASQC Quality Press, Milwaukee, 1993.
+
+\bibitem{leys2013} C. Leys, C. Ley, O. Klein, P. Bernard, L. Licata. Detecting
+outliers: do not use standard deviation around the mean, use absolute deviation
+around the median. \textit{Journal of Experimental Social Psychology},
+49(4):764--766, 2013.
+
+\bibitem{diebold2001} F.~X. Diebold, A. Inoue. Long memory and regime switching.
+\textit{Journal of Econometrics}, 105(1):131--159, 2001.
+
+\bibitem{clauset2009} A. Clauset, C.~R. Shalizi, M.~E.~J. Newman. Power-law
+distributions in empirical data. \textit{SIAM Review}, 51(4):661--703, 2009.
+
+\bibitem{vuong1989} Q.~H. Vuong. Likelihood ratio tests for model selection and
+non-nested hypotheses. \textit{Econometrica}, 57(2):307--333, 1989.
+
+\bibitem{kivela2015} M. Kivelä, M.~A. Porter. Estimating interevent time
+distributions from finite observation periods in communication networks.
+\textit{Physical Review E}, 92:052813, 2015.
+
+\bibitem{taqqu1997} M.~S. Taqqu, W. Willinger, R. Sherman. Proof of a fundamental
+result in self-similar traffic modeling. \textit{ACM SIGCOMM Computer
+Communication Review}, 27(2):5--23, 1997.
+
+\end{thebibliography}
+
+\end{document}
